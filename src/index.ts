@@ -8,11 +8,11 @@ import type {
   ReportErrorData,
   ReportErrorRequest,
   RequestPrimitive,
-  TtshituClientOptions,
-  TtshituEndpoint,
-  TtshituFailureResponse,
-  TtshituRequestOptions,
-  TtshituResponse,
+  ZkCaptchaClientOptions,
+  ZkCaptchaEndpoint,
+  ZkCaptchaFailureResponse,
+  ZkCaptchaRequestOptions,
+  ZkCaptchaResponse,
 } from "./types";
 
 export * from "./errors";
@@ -23,18 +23,13 @@ export * from "./types";
  *
  * 官方 HTTP 文档使用 `http://`，因此内置域名和自定义基础地址都会按 HTTP 规范化。
  */
-export const TTshituEndpoints = {
+export const ZkCaptchaEndpoints = {
   ttshitu: "http://api.ttshitu.com",
   zhunkuai: "http://api.zhunkuai.cn",
   kuaishibie: "http://api.kuaishibie.cn",
-} as const satisfies Record<TtshituEndpoint, string>;
+} as const satisfies Record<ZkCaptchaEndpoint, string>;
 
-/**
- * 使用常规 PascalCase 拼写的内置地址别名。
- */
-export const TtshituEndpoints = TTshituEndpoints;
-
-const DEFAULT_ENDPOINT: TtshituEndpoint = "ttshitu";
+const DEFAULT_ENDPOINT: ZkCaptchaEndpoint = "ttshitu";
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 type JsonObject = Record<string, unknown>;
@@ -46,19 +41,19 @@ type MaybeObject = Record<PropertyKey, unknown>;
  * 客户端使用 JSON 请求和 base64 图片字段访问官方接口，因此可以在现代浏览器和 Node 18+
  * 中直接运行，不需要额外运行时依赖。
  */
-export class TtshituClient {
+export class ZkCaptchaClient {
   private readonly username: string;
   private readonly password: string;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: FetchLike;
 
-  constructor(options: TtshituClientOptions) {
+  constructor(options: ZkCaptchaClientOptions) {
     const fetchImpl = options.fetch ?? globalThis.fetch;
 
     if (typeof fetchImpl !== "function") {
       throw new TypeError(
-        "当前运行时没有可用的 fetch 实现。请使用 Node 18+、现代浏览器，或在 TtshituClientOptions 中传入 fetch。",
+        "当前运行时没有可用的 fetch 实现。请使用 Node 18+、现代浏览器，或在 ZkCaptchaClientOptions 中传入 fetch。",
       );
     }
 
@@ -77,8 +72,8 @@ export class TtshituClient {
    */
   async recognize(
     request: RecognizeRequest,
-    options?: TtshituRequestOptions,
-  ): Promise<TtshituResponse<RecognizeData>> {
+    options?: ZkCaptchaRequestOptions,
+  ): Promise<ZkCaptchaResponse<RecognizeData>> {
     const body = await this.createRecognizeBody(request);
 
     return this.requestJson<RecognizeData>("/predict", {
@@ -91,11 +86,11 @@ export class TtshituClient {
   /**
    * 调用 `/predict` 识别验证码图片，并只返回成功响应中的 `data`。
    *
-   * 当请求失败时抛出 {@link TtshituApiError}，适合偏好异常流程的业务代码。
+   * 当请求失败时抛出 {@link ZkCaptchaApiError}，适合偏好异常流程的业务代码。
    */
   async recognizeOrThrow(
     request: RecognizeRequest,
-    options?: TtshituRequestOptions,
+    options?: ZkCaptchaRequestOptions,
   ): Promise<RecognizeData> {
     return unwrap(await this.recognize(request, options));
   }
@@ -107,8 +102,8 @@ export class TtshituClient {
    */
   async reportError(
     request: ReportErrorRequest,
-    options?: TtshituRequestOptions,
-  ): Promise<TtshituResponse<ReportErrorData>> {
+    options?: ZkCaptchaRequestOptions,
+  ): Promise<ZkCaptchaResponse<ReportErrorData>> {
     return this.requestJson<ReportErrorData>("/reporterror.json", {
       body: {
         id: request.id,
@@ -121,11 +116,11 @@ export class TtshituClient {
   /**
    * 上报错误识别结果，并只返回成功响应中的 `data`。
    *
-   * 当请求失败时抛出 {@link TtshituApiError}。
+   * 当请求失败时抛出 {@link ZkCaptchaApiError}。
    */
   async reportErrorOrThrow(
     request: ReportErrorRequest,
-    options?: TtshituRequestOptions,
+    options?: ZkCaptchaRequestOptions,
   ): Promise<ReportErrorData> {
     return unwrap(await this.reportError(request, options));
   }
@@ -134,8 +129,8 @@ export class TtshituClient {
    * 调用 `/queryAccountInfo.json` 查询账号余额和识别统计。
    */
   async queryAccountInfo(
-    options?: TtshituRequestOptions,
-  ): Promise<TtshituResponse<AccountInfoData>> {
+    options?: ZkCaptchaRequestOptions,
+  ): Promise<ZkCaptchaResponse<AccountInfoData>> {
     const searchParams = new URLSearchParams({
       username: this.username,
       password: this.password,
@@ -150,9 +145,9 @@ export class TtshituClient {
   /**
    * 查询账号信息，并只返回成功响应中的 `data`。
    *
-   * 当请求失败时抛出 {@link TtshituApiError}。
+   * 当请求失败时抛出 {@link ZkCaptchaApiError}。
    */
-  async queryAccountInfoOrThrow(options?: TtshituRequestOptions): Promise<AccountInfoData> {
+  async queryAccountInfoOrThrow(options?: ZkCaptchaRequestOptions): Promise<AccountInfoData> {
     return unwrap(await this.queryAccountInfo(options));
   }
 
@@ -195,9 +190,9 @@ export class TtshituClient {
     request: {
       body?: JsonObject | undefined;
       method: "GET" | "POST";
-      options?: TtshituRequestOptions | undefined;
+      options?: ZkCaptchaRequestOptions | undefined;
     },
-  ): Promise<TtshituResponse<TData>> {
+  ): Promise<ZkCaptchaResponse<TData>> {
     const timeoutMs = request.options?.timeoutMs ?? this.timeoutMs;
     const abort = createRequestAbort(timeoutMs, request.options?.signal);
     const init: RequestInit = {
@@ -226,7 +221,7 @@ export class TtshituClient {
         return httpFailure(response, payload.value);
       }
 
-      return normalizeTtshituResponse<TData>(payload.value);
+      return normalizeZkCaptchaResponse<TData>(payload.value);
     } catch (error) {
       if (abort.timedOut()) {
         return failure("TIMEOUT", `图鉴请求超过 ${timeoutMs}ms 未完成，已自动中断。`, "");
@@ -277,12 +272,12 @@ export async function imageToBase64(image: ImageInput): Promise<string> {
   );
 }
 
-function resolveBaseUrl(options: TtshituClientOptions): string {
+function resolveBaseUrl(options: ZkCaptchaClientOptions): string {
   if (options.baseUrl !== undefined) {
     return normalizeBaseUrl(options.baseUrl);
   }
 
-  return TTshituEndpoints[options.endpoint ?? DEFAULT_ENDPOINT];
+  return ZkCaptchaEndpoints[options.endpoint ?? DEFAULT_ENDPOINT];
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -414,7 +409,7 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false; me
   }
 }
 
-function normalizeTtshituResponse<TData>(payload: unknown): TtshituResponse<TData> {
+function normalizeZkCaptchaResponse<TData>(payload: unknown): ZkCaptchaResponse<TData> {
   if (!isObject(payload) || typeof payload.success !== "boolean") {
     return failure("INVALID_RESPONSE", "图鉴响应缺少布尔类型的 success 字段。", payload);
   }
@@ -439,7 +434,7 @@ function normalizeTtshituResponse<TData>(payload: unknown): TtshituResponse<TDat
 function httpFailure<TData>(
   response: Response,
   payload: unknown,
-): TtshituFailureResponse<TData | unknown> {
+): ZkCaptchaFailureResponse<TData | unknown> {
   const message =
     isObject(payload) && typeof payload.message === "string"
       ? payload.message
@@ -452,7 +447,7 @@ function failure<TErrorData>(
   code: string,
   message: string,
   data: TErrorData,
-): TtshituFailureResponse<TErrorData> {
+): ZkCaptchaFailureResponse<TErrorData> {
   return {
     success: false,
     code,

@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { TtshituClient } from "../src/index";
+import { ZkCaptchaClient } from "../src/index";
 import type { FetchLike } from "../src/index";
 import { fileToBase64, recognizeFromFile } from "../src/node";
 
@@ -20,7 +20,7 @@ function mockFetch(impl: FetchLike) {
 
 describe("node helpers", () => {
   it("reads local files as base64", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "ttshitu-"));
+    const directory = await mkdtemp(join(tmpdir(), "zk-captcha-"));
     const imagePath = join(directory, "captcha.bin");
     await writeFile(imagePath, new Uint8Array([1, 2, 3]));
 
@@ -28,7 +28,7 @@ describe("node helpers", () => {
   });
 
   it("recognizes local files through an existing client", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "ttshitu-"));
+    const directory = await mkdtemp(join(tmpdir(), "zk-captcha-"));
     const imagePath = join(directory, "captcha.bin");
     await writeFile(imagePath, new Uint8Array([1, 2, 3]));
     const fetchImpl = mockFetch(async (_url, _init) =>
@@ -42,7 +42,7 @@ describe("node helpers", () => {
         success: true,
       }),
     );
-    const client = new TtshituClient({
+    const client = new ZkCaptchaClient({
       fetch: fetchImpl,
       password: "p",
       username: "u",

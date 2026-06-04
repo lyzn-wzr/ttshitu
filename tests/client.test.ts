@@ -1,12 +1,12 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
-  TTshituEndpoints,
-  TtshituApiError,
-  TtshituClient,
+  ZkCaptchaEndpoints,
+  ZkCaptchaApiError,
+  ZkCaptchaClient,
   imageToBase64,
   unwrap,
 } from "../src/index";
-import type { AccountInfoData, FetchLike, TtshituResponse } from "../src/index";
+import type { AccountInfoData, FetchLike, ZkCaptchaResponse } from "../src/index";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -22,16 +22,16 @@ function mockFetch(impl: FetchLike) {
   return vi.fn<Parameters<FetchLike>, ReturnType<FetchLike>>(impl);
 }
 
-function createClient(fetchImpl: FetchLike): TtshituClient {
-  return new TtshituClient({
+function createClient(fetchImpl: FetchLike): ZkCaptchaClient {
+  return new ZkCaptchaClient({
     fetch: fetchImpl,
     password: "pass",
     username: "user",
   });
 }
 
-describe("TtshituClient endpoints", () => {
-  it("uses the default ttshitu endpoint and strips data URL prefixes", async () => {
+describe("ZkCaptchaClient endpoints", () => {
+  it("uses the default zk-captcha endpoint and strips data URL prefixes", async () => {
     const fetchImpl = mockFetch(async (_url, _init) =>
       jsonResponse({
         code: "0",
@@ -67,7 +67,7 @@ describe("TtshituClient endpoints", () => {
   });
 
   it("supports all built-in endpoint aliases", async () => {
-    const aliases = Object.keys(TTshituEndpoints) as Array<keyof typeof TTshituEndpoints>;
+    const aliases = Object.keys(ZkCaptchaEndpoints) as Array<keyof typeof ZkCaptchaEndpoints>;
 
     for (const endpoint of aliases) {
       const fetchImpl = mockFetch(async (_url, _init) =>
@@ -83,7 +83,7 @@ describe("TtshituClient endpoints", () => {
           success: true,
         }),
       );
-      const client = new TtshituClient({
+      const client = new ZkCaptchaClient({
         endpoint,
         fetch: fetchImpl,
         password: "p",
@@ -94,7 +94,7 @@ describe("TtshituClient endpoints", () => {
 
       const [url, init] = fetchImpl.mock.calls[0]!;
       expect(String(url)).toBe(
-        `${TTshituEndpoints[endpoint]}/queryAccountInfo.json?username=u&password=p`,
+        `${ZkCaptchaEndpoints[endpoint]}/queryAccountInfo.json?username=u&password=p`,
       );
       expect(init?.method).toBe("GET");
       expect(init?.body).toBeUndefined();
@@ -113,7 +113,7 @@ describe("TtshituClient endpoints", () => {
         success: true,
       }),
     );
-    const client = new TtshituClient({
+    const client = new ZkCaptchaClient({
       baseUrl: "api.zhunkuai.cn/",
       endpoint: "kuaishibie",
       fetch: fetchImpl,
@@ -140,8 +140,8 @@ describe("TtshituClient endpoints", () => {
         success: true,
       }),
     );
-    const client = new TtshituClient({
-      baseUrl: "http://proxy.example.com/ttshitu/?ignored=true#hash",
+    const client = new ZkCaptchaClient({
+      baseUrl: "http://proxy.example.com/zk-captcha/?ignored=true#hash",
       fetch: fetchImpl,
       password: "p",
       username: "u",
@@ -151,11 +151,11 @@ describe("TtshituClient endpoints", () => {
       image: "abc",
     });
 
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://proxy.example.com/ttshitu/predict");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://proxy.example.com/zk-captcha/predict");
   });
 });
 
-describe("TtshituClient request methods", () => {
+describe("ZkCaptchaClient request methods", () => {
   it("normalizes optional recognition fields and extra fields", async () => {
     const fetchImpl = mockFetch(async (_url, _init) =>
       jsonResponse({
@@ -321,7 +321,7 @@ describe("TtshituClient request methods", () => {
 });
 
 describe("throwing helpers and types", () => {
-  it("unwrap returns data for success and throws TtshituApiError for failure", () => {
+  it("unwrap returns data for success and throws ZkCaptchaApiError for failure", () => {
     const success = unwrap({
       code: "0",
       data: {
@@ -340,11 +340,11 @@ describe("throwing helpers and types", () => {
         message: "bad",
         success: false,
       }),
-    ).toThrow(TtshituApiError);
+    ).toThrow(ZkCaptchaApiError);
   });
 
   it("narrows response data by success", () => {
-    function assertNarrowing(response: TtshituResponse<AccountInfoData>): void {
+    function assertNarrowing(response: ZkCaptchaResponse<AccountInfoData>): void {
       if (response.success) {
         expectTypeOf(response.data.balance).toEqualTypeOf<string>();
       } else {

@@ -1,7 +1,7 @@
 {
-  "name": "ttshitu",
+  "name": "@lyzn/zk-captcha",
   "version": "0.1.0",
-  "description": "TypeScript client for the TTShitu captcha recognition API.",
+  "description": "用于准快/快识别/图鉴的识别验证码SDK。",
   "keywords": [
     "browser",
     "captcha",

@@ -2,9 +2,9 @@
  * SDK 内置的接口域名别名。
  *
  * 当业务需要走自己的后端代理、灰度域名，或者兼容图鉴接口协议的私有服务时，
- * 可以通过 {@link TtshituClientOptions.baseUrl} 传入完整基础地址覆盖这里的别名。
+ * 可以通过 {@link ZkCaptchaClientOptions.baseUrl} 传入完整基础地址覆盖这里的别名。
  */
-export type TtshituEndpoint = "ttshitu" | "zhunkuai" | "kuaishibie";
+export type ZkCaptchaEndpoint = "ttshitu" | "zhunkuai" | "kuaishibie";
 
 /**
  * 图鉴 HTTP 文档中列出的验证码类型编号。
@@ -70,7 +70,7 @@ export type RequestPrimitive = string | number | boolean | null;
 /**
  * 单次请求的控制参数。
  */
-export interface TtshituRequestOptions {
+export interface ZkCaptchaRequestOptions {
   /**
    * 外部传入的中断信号，用于从业务代码主动取消当前请求。
    */
@@ -93,9 +93,9 @@ export interface TtshituRequestOptions {
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
- * {@link TtshituClient} 构造参数。
+ * {@link ZkCaptchaClient} 构造参数。
  */
-export interface TtshituClientOptions {
+export interface ZkCaptchaClientOptions {
   /**
    * 图鉴账号用户名。
    */
@@ -109,7 +109,7 @@ export interface TtshituClientOptions {
   /**
    * 内置接口域名别名，默认值为 `"ttshitu"`。
    */
-  endpoint?: TtshituEndpoint;
+  endpoint?: ZkCaptchaEndpoint;
 
   /**
    * 自定义 API 基础地址。
@@ -256,7 +256,7 @@ export interface AccountInfoData {
 /**
  * 图鉴成功响应包装结构。
  */
-export interface TtshituSuccessResponse<TData> {
+export interface ZkCaptchaSuccessResponse<TData> {
   success: true;
   code: string;
   message: string;
@@ -268,7 +268,7 @@ export interface TtshituSuccessResponse<TData> {
  *
  * 非抛错方法会把接口失败、HTTP 错误、JSON 解析错误、超时和网络错误统一表示为该结构。
  */
-export interface TtshituFailureResponse<TErrorData = unknown> {
+export interface ZkCaptchaFailureResponse<TErrorData = unknown> {
   success: false;
   code: string;
   message: string;
@@ -280,6 +280,6 @@ export interface TtshituFailureResponse<TErrorData = unknown> {
  *
  * 通过判断 `response.success`，TypeScript 可以自动把 `response.data` 缩窄为成功或失败数据。
  */
-export type TtshituResponse<TData, TErrorData = unknown> =
-  | TtshituSuccessResponse<TData>
-  | TtshituFailureResponse<TErrorData>;
+export type ZkCaptchaResponse<TData, TErrorData = unknown> =
+  | ZkCaptchaSuccessResponse<TData>
+  | ZkCaptchaFailureResponse<TErrorData>;
