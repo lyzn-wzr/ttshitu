@@ -1,6 +1,6 @@
-# ttshitu
+# zk-captcha
 
-面向图鉴兼容验证码识别接口的 TypeScript SDK。
+面向图鉴/准快/快识别平台验证码识别的SDK。
 
 这个包同时支持 Node 18+ 和现代浏览器，使用原生 `fetch`，发布 ESM 和 CommonJS
 双格式构建，并提供详细的 TypeScript 类型和中文 JSDoc 注释。
@@ -8,15 +8,15 @@
 ## 安装
 
 ```bash
-pnpm add ttshitu
+pnpm add @lyzn/zk-captcha
 ```
 
 ## 快速开始
 
 ```ts
-import { TtshituClient } from "ttshitu";
+import { ZkCaptchaClient } from "@lyzn/zk-captcha";
 
-const client = new TtshituClient({
+const client = new ZkCaptchaClient({
   username: "你的账号",
   password: "你的密码",
 });
@@ -39,13 +39,13 @@ if (response.success) {
 官方文档示例使用 HTTP，因此 SDK 内置域名默认也是 HTTP。
 
 ```ts
-import { TTshituEndpoints, TtshituClient } from "ttshitu";
+import { ZkCaptchaEndpoints, ZkCaptchaClient } from "@lyzn/zk-captcha";
 
-console.log(TTshituEndpoints.ttshitu); // http://api.ttshitu.com
-console.log(TTshituEndpoints.zhunkuai); // http://api.zhunkuai.cn
-console.log(TTshituEndpoints.kuaishibie); // http://api.kuaishibie.cn
+console.log(ZkCaptchaEndpoints["zk-captcha"]); // http://api.ttshitu.com
+console.log(ZkCaptchaEndpoints.zhunkuai); // http://api.zhunkuai.cn
+console.log(ZkCaptchaEndpoints.kuaishibie); // http://api.kuaishibie.cn
 
-const client = new TtshituClient({
+const client = new ZkCaptchaClient({
   username: "你的账号",
   password: "你的密码",
   endpoint: "zhunkuai",
@@ -56,7 +56,7 @@ const client = new TtshituClient({
 `endpoint`；当没有写协议时，SDK 会按官方文档默认补全为 `http://`。
 
 ```ts
-const client = new TtshituClient({
+const client = new ZkCaptchaClient({
   username: "你的账号",
   password: "你的密码",
   baseUrl: "api.kuaishibie.cn",
@@ -129,7 +129,7 @@ if (response.success) {
 解析失败而抛出异常。如果业务更喜欢异常流程，可以使用 `*OrThrow` 方法或 `unwrap`。
 
 ```ts
-import { unwrap } from "ttshitu";
+import { unwrap } from "@lyzn/zk-captcha";
 
 const data = await client.recognizeOrThrow({
   typeid: 3,
@@ -140,18 +140,18 @@ const response = await client.queryAccountInfo();
 const account = unwrap(response);
 ```
 
-失败时会抛出 `TtshituApiError`，错误信息为中文，并保留原始失败响应。
+失败时会抛出 `ZkCaptchaApiError`，错误信息为中文，并保留原始失败响应。
 
 ## Node 文件辅助
 
-主入口 `ttshitu` 不依赖 Node 文件系统，适合浏览器打包。Node 专用的文件读取函数从
-`ttshitu/node` 导入。
+主入口 `@lyzn/zk-captcha` 不依赖 Node 文件系统，适合浏览器打包。Node 专用的文件读取函数从
+`@lyzn/zk-captcha/node` 导入。
 
 ```ts
-import { TtshituClient } from "ttshitu";
-import { fileToBase64, recognizeFromFile } from "ttshitu/node";
+import { ZkCaptchaClient } from "@lyzn/zk-captcha";
+import { fileToBase64, recognizeFromFile } from "@lyzn/zk-captcha/node";
 
-const client = new TtshituClient({
+const client = new ZkCaptchaClient({
   username: "你的账号",
   password: "你的密码",
 });
@@ -170,8 +170,8 @@ await recognizeFromFile(client, "./captcha.png", {
 ## CommonJS
 
 ```js
-const { TtshituClient } = require("ttshitu");
-const { recognizeFromFile } = require("ttshitu/node");
+const { ZkCaptchaClient } = require("@lyzn/zk-captcha");
+const { recognizeFromFile } = require("@lyzn/zk-captcha/node");
 ```
 
 ## 浏览器注意事项
@@ -212,4 +212,4 @@ pnpm check
 
 ## 参考文档
 
-<http://www.ttshitu.com/docs/index.html>
+[http://www.ttshitu.com/docs/index.html](http://www.ttshitu.com/docs/index.html)
