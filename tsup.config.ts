@@ -5,14 +5,12 @@ export default defineConfig({
   dts: true,
   entry: ["src/index.ts", "src/node.ts"],
   format: ["esm", "cjs"],
-  outExtension({ format }) {
-    return {
-      js: format === "esm" ? ".mjs" : ".cjs",
-    };
-  },
+  outExtension: ({ format }) => ({ js: format === "esm" ? ".mjs" : ".cjs" }),
+  platform: "node",
+  removeNodeProtocol: false,
   shims: false,
   sourcemap: true,
   splitting: false,
-  target: "es2022",
+  target: "node22.13",
   treeshake: true,
 });

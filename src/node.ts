@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { ZkCaptchaClient, unwrap } from "./index";
+import { unwrap } from "./errors";
+import type { ZkCaptchaClient } from "./index";
 import type {
   RecognizeData,
   RecognizeRequest,
@@ -10,28 +11,27 @@ import type {
 /**
  * 读取本地图片文件，并返回不带 Data URL 前缀的纯 base64 字符串。
  *
- * 该函数只从 `@lyzn/zk-captcha/node` 子入口导出，主入口 `@lyzn/zk-captcha` 不依赖 Node 文件系统模块，
- * 因而仍然可以安全用于浏览器打包。
+ * @param path 文件路径或 file URL。
+ * @returns 纯 base64 字符串，读取失败时抛出文件系统错误。
  */
-export async function fileToBase64(path: string | URL): Promise<string> {
-  return (await readFile(path)).toString("base64");
-}
+export const fileToBase64 = async (path: string | URL): Promise<string> =>
+  (await readFile(path)).toString("base64");
 
 /**
  * 从本地文件路径读取验证码图片并调用 `/predict` 识别。
  *
- * Node 应用可以从 `@lyzn/zk-captcha/node` 导入该辅助函数：
- *
- * ```ts
- * import { recognizeFromFile } from "@lyzn/zk-captcha/node";
- * ```
+ * @param client 已创建的客户端。
+ * @param path 文件路径或 file URL。
+ * @param request 除主图外的识别参数。
+ * @param options 单次请求控制。
+ * @returns 识别响应，仅由客户端记录一次；文件读取失败不发起请求。
  */
-export async function recognizeFromFile(
+export const recognizeFromFile = async (
   client: ZkCaptchaClient,
   path: string | URL,
   request: Omit<RecognizeRequest, "image"> = {},
   options?: ZkCaptchaRequestOptions,
-): Promise<ZkCaptchaResponse<RecognizeData>> {
+): Promise<ZkCaptchaResponse<RecognizeData>> => {
   return client.recognize(
     {
       ...request,
@@ -39,18 +39,23 @@ export async function recognizeFromFile(
     },
     options,
   );
-}
+};
 
 /**
  * 从本地文件路径读取验证码图片并识别，只返回成功响应中的 `data`。
  *
  * 当请求失败时抛出 `ZkCaptchaApiError`。
+ * @param client 已创建的客户端。
+ * @param path 文件路径或 file URL。
+ * @param request 除主图外的识别参数。
+ * @param options 单次请求控制。
+ * @returns 成功的识别数据，与非抛错辅助方法共用记录流程。
  */
-export async function recognizeFromFileOrThrow(
+export const recognizeFromFileOrThrow = async (
   client: ZkCaptchaClient,
   path: string | URL,
   request: Omit<RecognizeRequest, "image"> = {},
   options?: ZkCaptchaRequestOptions,
-): Promise<RecognizeData> {
+): Promise<RecognizeData> => {
   return unwrap(await recognizeFromFile(client, path, request, options));
-}
+};

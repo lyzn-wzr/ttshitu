@@ -15,7 +15,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 function mockFetch(impl: FetchLike) {
-  return vi.fn<Parameters<FetchLike>, ReturnType<FetchLike>>(impl);
+  return vi.fn<FetchLike>(impl);
 }
 
 describe("node helpers", () => {
@@ -43,6 +43,7 @@ describe("node helpers", () => {
       }),
     );
     const client = new ZkCaptchaClient({
+      history: false,
       fetch: fetchImpl,
       password: "p",
       username: "u",

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "用于准快/快识别/图鉴的识别验证码SDK。",
   "keywords": [
-    "browser",
+    "bun",
     "captcha",
     "kuaishibie",
     "node",
@@ -27,14 +27,34 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
+      "browser": null,
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "bun": {
+        "import": "./dist/index.mjs",
+        "require": "./dist/index.cjs"
+      },
+      "node": {
+        "import": "./dist/index.mjs",
+        "require": "./dist/index.cjs"
+      }
     },
     "./node": {
-      "types": "./dist/node.d.ts",
-      "import": "./dist/node.mjs",
-      "require": "./dist/node.cjs"
+      "browser": null,
+      "types": {
+        "import": "./dist/node.d.ts",
+        "require": "./dist/node.d.cts"
+      },
+      "bun": {
+        "import": "./dist/node.mjs",
+        "require": "./dist/node.cjs"
+      },
+      "node": {
+        "import": "./dist/node.mjs",
+        "require": "./dist/node.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
@@ -50,15 +70,16 @@
     "prepack": "pnpm build"
   },
   "devDependencies": {
-    "@types/node": "^20.14.10",
+    "@types/node": "^22.13.0",
     "oxfmt": "^0.53.0",
     "oxlint": "^1.68.0",
     "tsup": "^8.1.0",
     "typescript": "^5.5.3",
-    "vitest": "^1.6.0"
+    "vitest": "^3.2.7"
   },
   "engines": {
-    "node": ">=18"
+    "bun": ">=1.4.4",
+    "node": ">=22.13.0"
   },
   "packageManager": "pnpm@11.5.1"
 }
