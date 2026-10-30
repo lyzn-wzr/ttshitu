@@ -59,13 +59,14 @@
     "./package.json": "./package.json"
   },
   "scripts": {
+    "dev": "bun run dev/server.ts",
     "build": "tsup",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint src tests --tsconfig tsconfig.json --jsdoc-plugin --vitest-plugin --deny-warnings",
-    "lint:fix": "oxlint src tests --tsconfig tsconfig.json --jsdoc-plugin --vitest-plugin --fix",
-    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src tests dev --tsconfig tsconfig.json --jsdoc-plugin --vitest-plugin --deny-warnings",
+    "lint:fix": "oxlint src tests dev --tsconfig tsconfig.json --jsdoc-plugin --vitest-plugin --fix",
+    "typecheck": "tsc --noEmit && tsc -p dev/tsconfig.json",
     "test": "vitest run",
     "prepack": "pnpm build"
   },

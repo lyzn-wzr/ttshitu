@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zk-captcha · 本地验收台</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="验收台首页"
+        ><span class="brand-mark">zk</span><strong>zk-captcha</strong><span class="divider"></span
+        ><span>本地验收台</span></a
+      >
+      <span class="environment" id="environment">本地模拟 · 不产生费用</span>
+    </header>
+    <div class="shell">
+      <aside>
+        <div class="section-label">01 / CONNECTION</div>
+        <h1>连接配置</h1>
+        <p class="muted">用同一套 SDK，检查每一步结果。</p>
+        <form id="settings">
+          <fieldset>
+            <label for="mode">运行模式</label>
+            <select id="mode">
+              <option value="mock">本地模拟</option>
+              <option value="live">真实接口</option>
+            </select>
+            <p id="mode-note" class="hint">模拟网络响应，实际执行计价与本地存储。</p>
+            <label for="endpoint">接口平台</label>
+            <select id="endpoint">
+              <option value="ttshitu">图鉴 · ttshitu</option>
+              <option value="zhunkuai">准快 · zhunkuai</option>
+              <option value="kuaishibie">快识别 · kuaishibie</option>
+            </select>
+            <label for="username">账号</label
+            ><input id="username" value="demo" autocomplete="off" required />
+            <div id="live-fields" hidden>
+              <label for="password">密码</label
+              ><input id="password" type="password" autocomplete="off" />
+              <p class="hint">凭证仅用于本次页面会话，不保存到浏览器或配置文件。</p>
+            </div>
+            <div id="mock-fields">
+              <label for="scenario">模拟场景</label>
+              <select id="scenario">
+                <option value="success">识别成功</option>
+                <option value="failure">识别失败</option>
+                <option value="timeout">请求超时</option>
+                <option value="http">HTTP 500</option>
+                <option value="json">无效 JSON</option>
+                <option value="redirect">302 重定向拦截</option>
+                <option value="large">响应超过 64 KiB</option>
+              </select>
+              <label for="mock-result">模拟识别结果</label><input id="mock-result" value="a7K9" />
+            </div>
+            <details class="advanced">
+              <summary>更多配置</summary>
+              <label for="base-url">自定义接口地址</label
+              ><input id="base-url" placeholder="留空使用平台默认地址" autocomplete="off" />
+              <label for="timeout">超时 / 毫秒</label
+              ><input id="timeout" type="number" min="1" max="120000" value="1000" required />
+              <label for="retention">保留天数</label
+              ><input id="retention" type="number" min="1" max="36500" placeholder="留空永久保留" />
+              <p class="hint">填写后，读写时自动清理当前验收账号的过期记录及图片。</p>
+              <label for="prices">自定义价格 / 元</label
+              ><textarea id="prices" rows="3" spellcheck="false" placeholder='例如 {"3":"0.0002"}'>
+{}</textarea
+              >
+              <p class="hint">JSON 对象，金额用字符串，最多六位小数。历史费用保持原值。</p>
+            </details>
+            <button class="button full" type="submit">应用并刷新记录</button>
+          </fieldset>
+        </form>
+        <div class="storage-note">
+          <span class="section-label">LOCAL STORAGE</span><code>.zk-captcha/acceptance/</code>
+          <p>模拟与真实模式分库保存；账号、平台之间由 SDK 隔离。刷新页面后记录仍保留。</p>
+        </div>
+      </aside>
+      <main>
+        <div class="page-heading">
+          <div>
+            <div class="section-label">SDK / MANUAL ACCEPTANCE</div>
+            <h2>从一张图片开始。</h2>
+            <p class="muted">识别、检查响应，再核对明细和费用。</p>
+          </div>
+          <span class="runtime-tag">Bun / SQLite</span>
+        </div>
+        <div id="status" class="status" role="status" aria-live="polite">正在连接本地服务…</div>
+        <div class="workbench">
+          <section class="panel">
+            <div class="panel-heading">
+              <h3><span class="step">01</span>发起识别</h3>
+              <button class="text-button" id="sample" type="button">载入示例图片 ↗</button>
+            </div>
+            <form id="recognize">
+              <fieldset>
+                <div class="uploads">
+                  <div class="upload">
+                    <label class="upload-target" for="image"
+                      ><span>主图 <em>必填</em></span
+                      ><img id="preview-image" alt="待识别主图预览" hidden /><span
+                        class="upload-placeholder"
+                        id="placeholder-image"
+                        >＋<small>选择图片</small></span
+                      ><input id="image" type="file" accept="image/*"
+                    /></label>
+                    <div class="file-caption">
+                      <span id="name-image">未选择</span
+                      ><button
+                        type="button"
+                        class="text-button remove"
+                        data-remove="image"
+                        aria-label="移除主图"
+                        hidden
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                  <div class="upload">
+                    <label class="upload-target" for="imageback"
+                      ><span>背景图 <em>可选</em></span
+                      ><img id="preview-imageback" alt="背景图预览" hidden /><span
+                        class="upload-placeholder"
+                        id="placeholder-imageback"
+                        >＋<small>双图识别</small></span
+                      ><input id="imageback" type="file" accept="image/*"
+                    /></label>
+                    <div class="file-caption">
+                      <span id="name-imageback">未选择</span
+                      ><button
+                        type="button"
+                        class="text-button remove"
+                        data-remove="imageback"
+                        aria-label="移除背景图"
+                        hidden
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                  <div class="upload">
+                    <label class="upload-target" for="title_image"
+                      ><span>标题图 <em>可选</em></span
+                      ><img id="preview-title_image" alt="标题图预览" hidden /><span
+                        class="upload-placeholder"
+                        id="placeholder-title_image"
+                        >＋<small>快速点选</small></span
+                      ><input id="title_image" type="file" accept="image/*"
+                    /></label>
+                    <div class="file-caption">
+                      <span id="name-title_image">未选择</span
+                      ><button
+                        type="button"
+                        class="text-button remove"
+                        data-remove="title_image"
+                        aria-label="移除标题图"
+                        hidden
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="request-fields">
+                  <div>
+                    <label for="typeid">类型 ID</label
+                    ><input id="typeid" value="3" list="captcha-types" required /><datalist
+                      id="captcha-types"
+                    >
+                      <option value="3">数英混合</option>
+                      <option value="7">无感学习</option>
+                      <option value="16">汉字</option>
+                      <option value="32">通用文字识别</option>
+                      <option value="1033">拖动拼图</option>
+                    </datalist>
+                  </div>
+                  <div>
+                    <label for="remark">识别提示</label><input id="remark" placeholder="可选备注" />
+                  </div>
+                </div>
+                <div class="request-footer">
+                  <span class="hint">每张图片最大 5 MiB</span
+                  ><button class="button primary" id="recognize-button" type="submit">
+                    开始模拟识别 →
+                  </button>
+                </div>
+              </fieldset>
+            </form>
+          </section>
+          <section class="panel response-panel">
+            <div class="panel-heading">
+              <h3><span class="step">02</span>检查响应</h3>
+              <button class="text-button" id="account" type="button">查询余额 ↗</button>
+            </div>
+            <div class="response-label">
+              <span id="output-label">等待调用</span><span>JSON</span>
+            </div>
+            <pre id="output" tabindex="0">运行一次识别，查看 SDK 返回结果。</pre>
+            <form id="report">
+              <fieldset>
+                <label for="captcha-id">识别错误反馈 · 平台编号</label>
+                <div class="report-row">
+                  <input id="captcha-id" placeholder="成功识别后自动填入" required /><button
+                    class="button"
+                    type="submit"
+                  >
+                    报错
+                  </button>
+                </div>
+              </fieldset>
+            </form>
+          </section>
+        </div>
+        <section class="history-section">
+          <div class="panel-heading">
+            <h3><span class="step">03</span>核对本地记录</h3>
+            <span class="hint">费用为参考估算，未知费用单独计数</span>
+          </div>
+          <div class="metrics">
+            <div>
+              <span>识别总数</span><strong id="metric-total">—</strong
+              ><small id="metric-counts">等待加载</small>
+            </div>
+            <div>
+              <span>成功率</span><strong id="metric-rate">—</strong
+              ><small>平台 / SDK 请求成功比例</small>
+            </div>
+            <div>
+              <span>已知估算费用</span><strong id="metric-cost">—</strong
+              ><small id="metric-unknown">等待加载</small>
+            </div>
+            <div>
+              <span>平均耗时</span><strong id="metric-duration">—</strong
+              ><small>包含转换和请求，不含写库</small>
+            </div>
+          </div>
+          <form id="filters" class="filter-form">
+            <fieldset>
+              <div class="filter-row">
+                <div>
+                  <label for="filter-type">类型</label
+                  ><input id="filter-type" placeholder="全部类型" />
+                </div>
+                <div>
+                  <label for="filter-success">状态</label
+                  ><select id="filter-success">
+                    <option value="">全部状态</option>
+                    <option value="true">成功</option>
+                    <option value="false">失败</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="from">开始时间（含）</label><input id="from" type="datetime-local" />
+                </div>
+                <div>
+                  <label for="to">结束时间（不含）</label><input id="to" type="datetime-local" />
+                </div>
+                <button class="button" type="submit">查询 / 刷新</button
+                ><button class="text-button" id="reset-filters" type="button">重置</button>
+              </div>
+            </fieldset>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>识别时间 / 本地时区</th>
+                  <th>类型</th>
+                  <th>状态</th>
+                  <th>结果 / 错误码</th>
+                  <th>耗时</th>
+                  <th>估算费用 / 元</th>
+                  <th>明细</th>
+                </tr>
+              </thead>
+              <tbody id="records">
+                <tr>
+                  <td colspan="7" class="empty">尚未加载记录</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination">
+            <span id="page-label">每页 10 条</span>
+            <div>
+              <button class="button" id="previous" type="button" disabled>← 上一页</button
+              ><button class="button" id="next" type="button" disabled>下一页 →</button>
+            </div>
+          </div>
+          <details class="group-stats">
+            <summary>查看 SDK 分组统计 · 按类型 / UTC 日期</summary>
+            <pre id="group-stats" tabindex="0">尚未加载统计</pre>
+          </details>
+        </section>
+        <footer>
+          本机运行 · 真实模式识别可能产生平台费用 · 模拟余额为固定演示数据，不代表本地统计
+        </footer>
+      </main>
+    </div>
+    <dialog id="detail">
+      <div class="dialog-heading">
+        <div>
+          <div class="section-label">RECORD DETAIL</div>
+          <h3>识别明细</h3>
+        </div>
+        <form method="dialog"><button class="button" aria-label="关闭明细">关闭 ×</button></form>
+      </div>
+      <div id="detail-images" class="detail-images"></div>
+      <pre id="detail-data" tabindex="0"></pre>
+    </dialog>
+  </body>
+</html>
