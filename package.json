@@ -1,6 +1,6 @@
 {
   "name": "@lyzn/zk-captcha",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "用于准快/快识别/图鉴的识别验证码SDK。",
   "keywords": [
     "bun",
@@ -18,7 +18,8 @@
   "license": "MIT",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "sideEffects": false,
@@ -57,6 +58,10 @@
       }
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "dev": "bun run dev/server.ts",
