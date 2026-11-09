@@ -16,6 +16,9 @@ import type {
   FetchLike,
   HistoryListFilter,
   RecognizeRequest,
+  RecognizeData,
+  ZkCaptchaResponse,
+  ZkCaptchaSuccessResponse,
   ZkCaptchaClientOptions,
 } from "../src/index";
 
@@ -39,7 +42,7 @@ const jsonResponse = (body: unknown): Response => new Response(JSON.stringify(bo
  * @param result 平台返回的识别内容。
  * @returns 成功响应载荷。
  */
-const successBody = (result = "abcd") => ({
+const successBody = (result = "abcd"): ZkCaptchaSuccessResponse<RecognizeData> => ({
   success: true,
   code: "0",
   message: "success",
@@ -723,6 +726,187 @@ describe("local recognition history", () => {
     } finally {
       database.close();
     }
+  });
+
+  it("records algorithms once through all helpers, with source filters and independent pricing", async () => {
+    const { directory, createClient } = await fixture();
+    const algorithms = {
+      local: { kind: "local", typeids: [3, 11], recognize: () => successBody("local") },
+      remote: { kind: "http", typeids: [3], url: "https://example.invalid/solve" },
+    } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
+    const client = createClient({ algorithms });
+    const path = join(directory, "captcha.bin");
+    await writeFile(path, new Uint8Array([1, 2, 3]));
+    await client.recognize({ image: "AQID" });
+    await client.recognize({ image: "AQID", algorithm: "local" });
+    await client.recognizeOrThrow({ image: "AQID", algorithm: "local" });
+    await recognizeFromFile(client, path, { algorithm: "local" });
+    await recognizeFromFileOrThrow(client, path, { algorithm: "local", typeid: "11" });
+    await client.recognize({ image: "AQID", algorithm: "remote" });
+    const all = await client.getRecords();
+    expect(all.total).toBe(6);
+    expect((await client.getRecords({ algorithm: "local" })).total).toBe(4);
+    expect((await client.getRecords({ algorithm: null })).items[0]).toMatchObject({
+      algorithm: null,
+      price: "0.002000",
+    });
+    const remote = (await client.getRecords({ algorithm: "remote" })).items[0];
+    expect(remote).toMatchObject({ algorithm: "remote", price: null, pricingSource: "unknown" });
+    if (remote === undefined) throw new Error("Missing remote record");
+    expect((await client.getRecord(remote.id))?.image).toEqual(new Uint8Array([1, 2, 3]));
+    expect((await client.getStats({ algorithm: "local", typeid: 3 })).summary).toMatchObject({
+      total: 3,
+      unknownPriceCount: 3,
+    });
+    expect((await client.getStats({ algorithm: null })).summary).toMatchObject({
+      total: 1,
+      estimatedCost: "0.002000",
+    });
+    expect((await client.getRecords({ algorithm: "local' OR 1=1 --" })).total).toBe(0);
+
+    const overridden = createClient({ algorithms, history: { directory, prices: { "3": "0" } } });
+    await overridden.recognize({ image: "AQID", algorithm: "local" });
+    const custom = await overridden.getRecords({ algorithm: "local" });
+    expect(custom.items.filter((record) => record.pricingSource === "custom")).toHaveLength(1);
+    expect(custom.items.find((record) => record.pricingSource === "custom")?.price).toBe(
+      "0.000000",
+    );
+    expect(custom.items.filter((record) => record.price === null)).toHaveLength(4);
+    await expect(
+      recognizeFromFile(client, join(directory, "missing.bin"), { algorithm: "local" }),
+    ).rejects.toThrow(/ENOENT/);
+    expect((await client.getRecords()).total).toBe(7);
+  });
+
+  it("records algorithm failures before throwing, but not failed image conversion", async () => {
+    const { createClient } = await fixture();
+    const client = createClient({
+      algorithms: {
+        rejected: {
+          kind: "local",
+          typeids: [3],
+          recognize: () => ({ success: false, code: "REJECTED", message: "uncertain", data: "" }),
+        },
+        throwing: {
+          kind: "local",
+          typeids: [3],
+          recognize: () => {
+            throw new Error("failed");
+          },
+        },
+      },
+    });
+    for (const [algorithm, typeid, code] of [
+      ["missing", 3, "ALGORITHM_NOT_FOUND"],
+      ["rejected", 11, "UNSUPPORTED_TYPE"],
+      ["rejected", 3, "REJECTED"],
+      ["throwing", 3, "ALGORITHM_ERROR"],
+    ] satisfies Array<[string, number, string]>) {
+      await expect(
+        client.recognizeOrThrow({ image: "AQID", algorithm, typeid }),
+      ).rejects.toMatchObject({ code });
+      expect(
+        (await client.getRecords({ algorithm })).items.some((record) => record.code === code),
+      ).toBe(true);
+    }
+    expect((await client.getStats()).summary).toMatchObject({
+      total: 4,
+      failureCount: 4,
+      unknownPriceCount: 4,
+    });
+    const image = new Blob([]);
+    vi.spyOn(image, "arrayBuffer").mockRejectedValue(new Error("unreadable image"));
+    await expect(client.recognize({ image, algorithm: "rejected" })).rejects.toThrow(
+      "unreadable image",
+    );
+    expect((await client.getRecords()).total).toBe(4);
+  });
+
+  it("upgrades an old database without losing records or images, and reopens idempotently", async () => {
+    const { directory, createClient } = await fixture();
+    const seeder = createClient();
+    await seeder.recognize({ image: "AQID" });
+    const original = (await seeder.getRecords()).items[0];
+    if (original === undefined) throw new Error("Missing original record");
+    await seeder.close();
+    const database = new DatabaseSync(join(directory, "history.sqlite"));
+    try {
+      database.exec("ALTER TABLE recognition_records DROP COLUMN algorithm");
+    } finally {
+      database.close();
+    }
+    const algorithms = {
+      local: { kind: "local", typeids: [3], recognize: () => successBody() },
+    } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
+    const upgraded = createClient({ algorithms });
+    expect(await upgraded.getRecord(original.id)).toMatchObject({
+      ...original,
+      algorithm: null,
+      image: new Uint8Array([1, 2, 3]),
+    });
+    await upgraded.recognize({ image: "BAUG", algorithm: "local" });
+    await upgraded.close();
+    const reopened = createClient({ algorithms });
+    expect((await reopened.getRecords()).total).toBe(2);
+    expect((await reopened.getRecords({ algorithm: null })).total).toBe(1);
+    expect((await reopened.getRecords({ algorithm: "local" })).total).toBe(1);
+  });
+
+  it("ignores late local results after timeout and lets close wait for accepted algorithms", async () => {
+    const { createClient } = await fixture();
+    let release: ((response: ZkCaptchaResponse<RecognizeData>) => void) | undefined;
+    const recognize = () =>
+      new Promise<ZkCaptchaResponse<RecognizeData>>((resolveResult) => {
+        release = resolveResult;
+      });
+    const algorithms = { local: { kind: "local", typeids: [3], recognize } } satisfies NonNullable<
+      ZkCaptchaClientOptions["algorithms"]
+    >;
+    const client = createClient({ algorithms });
+    await expect(
+      client.recognize({ image: "AQID", algorithm: "local" }, { timeoutMs: 10 }),
+    ).resolves.toMatchObject({ code: "TIMEOUT" });
+    release?.(successBody("late"));
+    const timedOut = await client.getRecords();
+    expect(timedOut.total).toBe(1);
+    expect(timedOut.items[0]).toMatchObject({
+      algorithm: "local",
+      success: false,
+      code: "TIMEOUT",
+    });
+
+    let announce: (() => void) | undefined;
+    const started = new Promise<void>((resolveStarted) => {
+      announce = resolveStarted;
+    });
+    const waiting = createClient({
+      algorithms: {
+        local: {
+          kind: "local",
+          typeids: [3],
+          recognize: () => {
+            const pending = recognize();
+            announce?.();
+            return pending;
+          },
+        },
+      },
+    });
+    const pending = waiting.recognize({ image: "AQID", algorithm: "local" });
+    await started;
+    let closed = false;
+    const closing = waiting.close().then(() => {
+      closed = true;
+    });
+    await expect(waiting.recognize({ image: "AQID", algorithm: "local" })).rejects.toThrow(
+      "已关闭",
+    );
+    expect(closed).toBe(false);
+    release?.(successBody("accepted"));
+    await pending;
+    await closing;
+    expect((await client.getRecords()).total).toBe(2);
+    expect((await client.getRecords({ success: true })).items[0]?.result).toBe("accepted");
   });
 
   it("disables persistence completely and clearly rejects history queries", async () => {

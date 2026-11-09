@@ -97,14 +97,14 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
  */
 export interface ZkCaptchaClientOptions {
   /**
-   * 图鉴账号用户名。
+   * 平台账号用户名；仅使用自定义算法时可省略，省略时共享空账号的本地记录范围。
    */
-  username: string;
+  username?: string;
 
   /**
-   * 图鉴账号密码。
+   * 平台账号密码；调用平台接口时必需，不会注入自定义算法请求。
    */
-  password: string;
+  password?: string;
 
   /**
    * 内置接口域名别名，默认值为 `"ttshitu"`。
@@ -137,7 +137,63 @@ export interface ZkCaptchaClientOptions {
 
   /** 本地记录默认开启；设为 `false` 时不访问文件系统。 */
   history?: false | HistoryOptions;
+
+  /** 提前注册的自定义算法；调用 recognize 时通过 algorithm 显式选择。 */
+  algorithms?: Readonly<Record<string, ZkCaptchaAlgorithm>>;
 }
+
+/** 本地与 HTTP 算法共用的输入；extra 保持嵌套，图片均为纯 base64。 */
+export interface ZkCaptchaAlgorithmRequest extends Omit<
+  RecognizeRequest,
+  "algorithm" | "image" | "imageback" | "title_image" | "typeid"
+> {
+  /** 主图的纯 base64 字符串。 */
+  image: string;
+  /** 归一化的类型编号，未指定时为 "3"。 */
+  typeid: string;
+  /** 可选背景图的纯 base64 字符串。 */
+  imageback?: string;
+  /** 可选标题图的纯 base64 字符串。 */
+  title_image?: string;
+}
+
+/** 算法应配合信号释放资源；SDK 无法强制打断同步计算。 */
+export interface ZkCaptchaAlgorithmContext {
+  /** 合并单次取消和超时控制的信号。 */
+  signal: AbortSignal;
+}
+
+/**
+ * 算法自行提供识别编号；异常由 SDK 转为 ALGORITHM_ERROR。
+ * @param request 不含平台凭证的归一化识别参数。
+ * @param context 合并超时与外部取消的执行上下文。
+ * @returns 标准识别响应，可同步或异步返回。
+ */
+export type ZkCaptchaAlgorithmHandler = (
+  request: ZkCaptchaAlgorithmRequest,
+  context: ZkCaptchaAlgorithmContext,
+) => ZkCaptchaResponse<RecognizeData> | Promise<ZkCaptchaResponse<RecognizeData>>;
+
+/** 每个算法可支持多个类型；不同算法允许支持相同类型。 */
+export type ZkCaptchaAlgorithm = {
+  /** 支持的非空类型列表，数字与对应字符串等价。 */
+  typeids: readonly CaptchaTypeId[];
+} & (
+  | {
+      /** 进程内识别函数。 */
+      kind: "local";
+      /** 与远程接口返回相同标准响应的识别实现。 */
+      recognize: ZkCaptchaAlgorithmHandler;
+    }
+  | {
+      /** 通过 JSON POST 调用的远程算法。 */
+      kind: "http";
+      /** 完整 HTTP/HTTPS 地址，不自动追加路径或平台凭证。 */
+      url: string;
+      /** 远程服务鉴权等请求头；请求体固定为 JSON。 */
+      headers?: Readonly<Record<string, string>>;
+    }
+);
 
 /** 本地 SQLite 记录配置；相对目录从调用方项目根目录解析。 */
 export interface HistoryOptions {
@@ -159,6 +215,8 @@ export interface HistoryFilter {
   to?: string;
   /** 识别类型，数字与对应字符串等价。 */
   typeid?: CaptchaTypeId;
+  /** 省略查询全部；null 仅查原平台，字符串仅查对应算法。 */
+  algorithm?: string | null;
   /** 仅查询成功或失败记录，省略时包含两者。 */
   success?: boolean;
 }
@@ -180,6 +238,8 @@ export interface RecognitionRecord {
   id: string;
   /** 平台返回的识别编号，失败时为 `null`。 */
   captchaId: string | null;
+  /** 自定义算法标识；原平台和升级前的记录为 null。 */
+  algorithm: string | null;
   /** 实际发送的类型编号，未传时记录官方默认类型 `3`。 */
   typeid: string;
   /** 已知类型的中文名称，自定义类型为 `null`。 */
@@ -259,6 +319,9 @@ export interface RecognitionStats {
  * 通用图片识别接口 `/predict` 的请求参数。
  */
 export interface RecognizeRequest {
+  /** 显式选择已注册算法；省略时调用原平台，不自动回退。 */
+  algorithm?: string;
+
   /**
    * 主验证码图片，官方接口必填。
    */
@@ -325,7 +388,7 @@ export interface RecognizeData {
   result: string;
 
   /**
-   * 本次识别记录编号。识别结果错误时，将该编号传给 `reportError` 进行报错。
+   * 平台或算法提供的识别编号；只有平台编号可用于 `reportError`。
    */
   id: string;
 }

@@ -18,7 +18,7 @@ export const fileToBase64 = async (path: string | URL): Promise<string> =>
   (await readFile(path)).toString("base64");
 
 /**
- * 从本地文件路径读取验证码图片并调用 `/predict` 识别。
+ * 从本地文件路径读取验证码图片，按客户端请求参数选择算法或平台识别。
  *
  * @param client 已创建的客户端。
  * @param path 文件路径或 file URL。

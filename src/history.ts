@@ -19,7 +19,7 @@ import type {
   ZkCaptchaResponse,
 } from "./types";
 
-const recordColumns = `id, captcha_id, typeid, type_name, started_at, duration_ms,
+const recordColumns = `id, captcha_id, algorithm, typeid, type_name, started_at, duration_ms,
   success, result, code, message, price_micros, pricing_source`;
 const summaryColumns = `COUNT(*) AS total, COALESCE(SUM(success), 0) AS success_count,
   COALESCE(AVG(duration_ms), 0) AS average_duration_ms,
@@ -67,6 +67,7 @@ export class HistoryStore {
    * @param response 已完成的识别响应。
    * @param startedAt 识别开始时间，UTC ISO 字符串。
    * @param durationMs 不含本地写入的耗时。
+   * @param algorithm 自定义算法标识；null 表示原平台。
    * @returns 无返回值，不改变识别结果。
    */
   record(
@@ -74,6 +75,7 @@ export class HistoryStore {
     response: ZkCaptchaResponse<RecognizeData>,
     startedAt: string,
     durationMs: number,
+    algorithm: string | null = null,
   ): void {
     try {
       const typeid = body.typeid === undefined ? "3" : String(body.typeid);
@@ -81,7 +83,8 @@ export class HistoryStore {
       const price = estimatePrice(
         typeid,
         result,
-        this.official &&
+        algorithm === null &&
+          this.official &&
           (body.modelid === undefined || body.modelid === null || body.modelid === ""),
         this.prices,
       );
@@ -91,10 +94,11 @@ export class HistoryStore {
       database
         .prepare(`INSERT INTO recognition_records (
           ${recordColumns}, scope_key, image, imageback, title_image
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           randomUUID(),
           response.success ? response.data.id : null,
+          algorithm,
           typeid,
           getTypeName(typeid),
           startedAt,
@@ -234,11 +238,14 @@ export class HistoryStore {
     const database = new DatabaseSync(join(directory, "history.sqlite"));
     try {
       database.exec(`PRAGMA busy_timeout = 5000;
-        PRAGMA journal_mode = WAL;
-        CREATE TABLE IF NOT EXISTS recognition_records (
+        PRAGMA journal_mode = WAL;`);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.exec(`CREATE TABLE IF NOT EXISTS recognition_records (
           id TEXT PRIMARY KEY,
           scope_key TEXT NOT NULL,
           captcha_id TEXT,
+          algorithm TEXT,
           typeid TEXT NOT NULL,
           type_name TEXT,
           started_at TEXT NOT NULL,
@@ -255,6 +262,15 @@ export class HistoryStore {
         ) STRICT;
         CREATE INDEX IF NOT EXISTS recognition_scope_time ON recognition_records(scope_key, started_at DESC, id DESC);
         CREATE INDEX IF NOT EXISTS recognition_scope_type_time ON recognition_records(scope_key, typeid, started_at DESC);`);
+        const columns = database.prepare("PRAGMA table_info(recognition_records)").all();
+        if (!columns.some((column) => column.name === "algorithm")) {
+          database.exec("ALTER TABLE recognition_records ADD COLUMN algorithm TEXT");
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
       this.database = database;
       return database;
     } catch (error) {
@@ -320,6 +336,17 @@ export class HistoryStore {
     if (filter.typeid !== undefined) {
       clauses.push("typeid = ?");
       params.push(String(filter.typeid));
+    }
+    if (filter.algorithm !== undefined) {
+      if (filter.algorithm === null) {
+        clauses.push("algorithm IS NULL");
+      } else {
+        if (typeof filter.algorithm !== "string") {
+          throw new TypeError("algorithm 筛选须为字符串或 null。");
+        }
+        clauses.push("algorithm = ?");
+        params.push(filter.algorithm);
+      }
     }
     if (filter.success !== undefined) {
       if (typeof filter.success !== "boolean") {
@@ -455,6 +482,7 @@ const readRecord = (row: Record<string, SQLOutputValue>): RecognitionRecord => {
   return {
     id: stringValue(row.id),
     captchaId: nullableString(row.captcha_id),
+    algorithm: nullableString(row.algorithm),
     typeid: stringValue(row.typeid),
     typeName: nullableString(row.type_name),
     startedAt: stringValue(row.started_at),

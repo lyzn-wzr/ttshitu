@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 import process from "node:process";
+import { prepareAlgorithms } from "./algorithms";
+import type { PreparedAlgorithm } from "./algorithms";
 import { unwrap } from "./errors";
 import { HistoryStore } from "./history";
 import type {
@@ -16,6 +18,7 @@ import type {
   ReportErrorData,
   ReportErrorRequest,
   RequestPrimitive,
+  ZkCaptchaAlgorithmRequest,
   ZkCaptchaClientOptions,
   ZkCaptchaEndpoint,
   ZkCaptchaFailureResponse,
@@ -54,6 +57,7 @@ export class ZkCaptchaClient {
   private readonly maxResponseBytes: number;
   private readonly fetchImpl: FetchLike;
   private readonly history: HistoryStore | undefined;
+  private readonly algorithms: ReadonlyMap<string, PreparedAlgorithm>;
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -73,8 +77,9 @@ export class ZkCaptchaClient {
       );
     }
 
-    this.username = options.username;
-    this.password = options.password;
+    this.username = options.username ?? "";
+    this.password = options.password ?? "";
+    this.algorithms = prepareAlgorithms(options.algorithms);
     this.baseUrl = resolveBaseUrl(options);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -94,7 +99,7 @@ export class ZkCaptchaClient {
   }
 
   /**
-   * 调用 `/predict` 识别验证码图片。
+   * 通过指定算法或平台 `/predict` 识别验证码图片。
    *
    * 该方法不会因为接口失败、HTTP 错误、超时、JSON 解析失败或网络错误而抛出异常。
    * 调用方可以通过 `response.success` 判断并获得类型缩窄后的响应数据。
@@ -109,24 +114,33 @@ export class ZkCaptchaClient {
     return this.track(async () => {
       const startedAt = new Date().toISOString();
       const started = performance.now();
-      const body = await this.createRecognizeBody(request);
-      const response = await this.requestJson(
-        "/predict",
-        {
-          body,
-          method: "POST",
-          options,
-        },
-        isRecognizeData,
-      );
+      const algorithmId = request.algorithm;
+      const algorithmRequest =
+        algorithmId === undefined ? undefined : await normalizeAlgorithmRequest(request);
+      const body =
+        algorithmRequest === undefined
+          ? await this.createRecognizeBody(request)
+          : { ...algorithmRequest };
+      const response =
+        algorithmRequest === undefined
+          ? await this.requestJson(
+              "/predict",
+              {
+                body,
+                method: "POST",
+                options,
+              },
+              isRecognizeData,
+            )
+          : await this.recognizeAlgorithm(algorithmId ?? "", algorithmRequest, options);
       const durationMs = performance.now() - started;
-      this.history?.record(body, response, startedAt, durationMs);
+      this.history?.record(body, response, startedAt, durationMs, algorithmId ?? null);
       return response;
     });
   }
 
   /**
-   * 调用 `/predict` 识别验证码图片，并只返回成功响应中的 `data`。
+   * 识别验证码图片，并只返回成功响应中的 `data`。
    *
    * 当请求失败时抛出 {@link ZkCaptchaApiError}，适合偏好异常流程的业务代码。
    * @param request 图片与类型等识别参数。
@@ -288,6 +302,70 @@ export class ZkCaptchaClient {
   }
 
   /**
+   * 显式分发算法，不匹配或失败时不会触发平台回退。
+   * @param id 调用方选择的算法标识。
+   * @param request 已转换图片的标准算法请求。
+   * @param options 单次取消和超时配置。
+   * @returns 与平台识别相同的标准响应。
+   */
+  private async recognizeAlgorithm(
+    id: string,
+    request: ZkCaptchaAlgorithmRequest,
+    options?: ZkCaptchaRequestOptions,
+  ): Promise<ZkCaptchaResponse<RecognizeData>> {
+    const algorithm = this.algorithms.get(id);
+    if (algorithm === undefined) {
+      return failure("ALGORITHM_NOT_FOUND", `未注册算法：${id}。`, "");
+    }
+    if (!algorithm.typeids.has(request.typeid)) {
+      return failure("UNSUPPORTED_TYPE", `算法 ${id} 不支持类型 ${request.typeid}。`, "");
+    }
+    if (algorithm.kind === "http") {
+      return this.requestJson(
+        "",
+        {
+          url: algorithm.url,
+          headers: algorithm.headers,
+          body: request,
+          method: "POST",
+          options,
+        },
+        isRecognizeData,
+      );
+    }
+
+    const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+    const abort = createRequestAbort(timeoutMs, options?.signal);
+    let onAbort: (() => void) | undefined;
+    try {
+      abort.signal.throwIfAborted();
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(abort.signal.reason);
+        abort.signal.addEventListener("abort", onAbort, { once: true });
+      });
+      // race 持有回调的拒绝处理，超时后的晚到结果不会再次写入或成为未处理异常。
+      const operation = Promise.resolve().then(() => {
+        abort.signal.throwIfAborted();
+        return algorithm.recognize(request, { signal: abort.signal });
+      });
+      const payload = await Promise.race([operation, interrupted]);
+      abort.signal.throwIfAborted();
+      return normalizeZkCaptchaResponse(payload, isRecognizeData);
+    } catch (error) {
+      if (abort.timedOut()) {
+        return failure("TIMEOUT", `算法 ${id} 超过 ${timeoutMs}ms 未完成，已自动中断。`, "");
+      }
+      if (abort.signal.aborted) {
+        return failure("ABORTED", `算法 ${id} 已被外部信号中断。`, "");
+      }
+      return failure("ALGORITHM_ERROR", errorMessage(error), "");
+    } finally {
+      if (onAbort !== undefined) abort.signal.removeEventListener("abort", onAbort);
+      abort.cleanup();
+    }
+  }
+
+  /**
    * 只转换一次图片，记录复用实际发送的请求体。
    * @param request 调用方提供的识别参数。
    * @returns 官方 JSON 请求体。
@@ -328,7 +406,7 @@ export class ZkCaptchaClient {
 
   /**
    * 将传输异常转换为判别联合，并校验成功载荷，避免未经验证的数据进入记录。
-   * @param path API 路径。
+   * @param path 平台 API 路径；显式 url 覆盖此路径。
    * @param request 请求体、方法与中断配置。
    * @param isData 对应接口的成功数据校验器。
    * @returns 类型安全的成功或失败响应。
@@ -336,12 +414,17 @@ export class ZkCaptchaClient {
   private async requestJson<TData>(
     path: string,
     request: {
-      body?: JsonObject | undefined;
+      body?: object | undefined;
       method: "GET" | "POST";
       options?: ZkCaptchaRequestOptions | undefined;
+      url?: string;
+      headers?: Readonly<Record<string, string>>;
     },
     isData: (value: unknown) => value is TData,
   ): Promise<ZkCaptchaResponse<TData>> {
+    if (request.url === undefined && (!this.username || !this.password)) {
+      return failure("MISSING_CREDENTIALS", "调用平台接口需要配置 username 和 password。", "");
+    }
     const timeoutMs = request.options?.timeoutMs ?? this.timeoutMs;
     const abort = createRequestAbort(timeoutMs, request.options?.signal);
     const init: RequestInit = {
@@ -354,22 +437,24 @@ export class ZkCaptchaClient {
       init.body = JSON.stringify(request.body);
       init.headers = {
         "content-type": "application/json;charset=UTF-8",
+        ...request.headers,
       };
     }
 
     try {
-      const response = await this.fetchImpl(this.createUrl(path), init);
+      abort.signal.throwIfAborted();
+      const response = await this.fetchImpl(request.url ?? this.createUrl(path), init);
 
       if ((response.status >= 300 && response.status < 400) || response.redirected) {
         void response.body?.cancel().catch(() => {});
-        return failure("REDIRECT_BLOCKED", "图鉴请求不允许重定向。", "");
+        return failure("REDIRECT_BLOCKED", "接口请求不允许重定向。", "");
       }
 
       const text = await this.readResponseText(response);
       if (text === null) {
         return failure(
           "RESPONSE_TOO_LARGE",
-          `图鉴响应体超过 ${this.maxResponseBytes} 字节限制。`,
+          `接口响应体超过 ${this.maxResponseBytes} 字节限制。`,
           "",
         );
       }
@@ -386,11 +471,11 @@ export class ZkCaptchaClient {
       return normalizeZkCaptchaResponse(payload.value, isData);
     } catch (error) {
       if (abort.timedOut()) {
-        return failure("TIMEOUT", `图鉴请求超过 ${timeoutMs}ms 未完成，已自动中断。`, "");
+        return failure("TIMEOUT", `接口请求超过 ${timeoutMs}ms 未完成，已自动中断。`, "");
       }
 
-      if (isAbortError(error)) {
-        return failure("ABORTED", "图鉴请求已被外部信号中断。", "");
+      if (abort.signal.aborted || isAbortError(error)) {
+        return failure("ABORTED", "接口请求已被外部信号中断。", "");
       }
 
       return failure("NETWORK_ERROR", errorMessage(error), "");
@@ -469,6 +554,36 @@ export const imageToBase64 = async (image: ImageInput): Promise<string> => {
   throw new TypeError(
     "不支持的图片输入类型。请传入 base64、ArrayBuffer、Uint8Array、Blob 或 File。",
   );
+};
+
+/**
+ * 为本地和 HTTP 算法构造同一请求，不注入平台凭证，也不展开 extra。
+ * @param request 原始识别参数。
+ * @returns 图片转换后的独立请求对象。
+ */
+const normalizeAlgorithmRequest = async (
+  request: RecognizeRequest,
+): Promise<ZkCaptchaAlgorithmRequest> => {
+  const normalized: ZkCaptchaAlgorithmRequest = {
+    image: await imageToBase64(request.image),
+    typeid: String(request.typeid ?? 3),
+  };
+  if (request.imageback !== undefined)
+    normalized.imageback = await imageToBase64(request.imageback);
+  if (request.title_image !== undefined)
+    normalized.title_image = await imageToBase64(request.title_image);
+  if (request.angle !== undefined) normalized.angle = request.angle;
+  if (request.step !== undefined) normalized.step = request.step;
+  if (request.typename !== undefined) normalized.typename = request.typename;
+  if (request.remark !== undefined) normalized.remark = request.remark;
+  if (request.content !== undefined) normalized.content = request.content;
+  if (request.modelid !== undefined) normalized.modelid = request.modelid;
+  if (request.extra !== undefined) {
+    normalized.extra = Object.fromEntries(
+      Object.entries(request.extra).filter(([, value]) => value !== undefined),
+    );
+  }
+  return normalized;
 };
 
 /**
@@ -590,7 +705,7 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false; me
   if (text.trim().length === 0) {
     return {
       ok: false,
-      message: "图鉴响应体为空，无法解析 JSON。",
+      message: "接口响应体为空，无法解析 JSON。",
     };
   }
 
@@ -603,7 +718,7 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false; me
   } catch (error) {
     return {
       ok: false,
-      message: `图鉴响应不是合法 JSON：${errorMessage(error)}`,
+      message: `接口响应不是合法 JSON：${errorMessage(error)}`,
     };
   }
 }
@@ -619,12 +734,12 @@ const normalizeZkCaptchaResponse = <TData>(
   isData: (value: unknown) => value is TData,
 ): ZkCaptchaResponse<TData> => {
   if (!isObject(payload) || typeof payload.success !== "boolean") {
-    return failure("INVALID_RESPONSE", "图鉴响应缺少布尔类型的 success 字段。", payload);
+    return failure("INVALID_RESPONSE", "接口响应缺少布尔类型的 success 字段。", payload);
   }
 
   if (payload.success) {
     if (!isData(payload.data)) {
-      return failure("INVALID_RESPONSE", "图鉴成功响应中的 data 字段无效。", payload);
+      return failure("INVALID_RESPONSE", "接口成功响应中的 data 字段无效。", payload);
     }
     return {
       success: true,
@@ -637,7 +752,7 @@ const normalizeZkCaptchaResponse = <TData>(
   return {
     success: false,
     code: stringOrDefault(payload.code, "-1"),
-    message: stringOrDefault(payload.message, "图鉴请求失败。"),
+    message: stringOrDefault(payload.message, "接口请求失败。"),
     data: "data" in payload ? payload.data : "",
   };
 };
