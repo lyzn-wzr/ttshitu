@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { ZkCaptchaClient } from "../src/index";
 import type { FetchLike, HistoryListFilter, ZkCaptchaClientOptions } from "../src/index";
+import { templateMathAlgorithm } from "./template-math";
 
 /** 三张 5 MiB 图片编码为 base64 后的请求上限。 */
 const MAX_BODY_BYTES = 24 * 1024 * 1024;
@@ -16,6 +17,7 @@ const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/style.css", ["style.css", "text/css; charset=utf-8"]],
+  ["/math-sample.png", ["template-math/sample.png", "image/png"]],
 ]);
 const scenarios = ["success", "failure", "http", "json", "timeout", "redirect", "large"];
 
@@ -129,25 +131,31 @@ const mockFetch =
  * @param value 浏览器配置。
  * @param directory 验收专用记录根目录。
  * @param warnings 收集 SDK 保存失败信息，防止界面误报已落库。
- * @returns 按模拟/真实模式隔离数据的 SDK 客户端。
+ * @returns 按模拟、真实和模板模式隔离数据的 SDK 客户端。
  */
 const createClient = (value: unknown, directory: string, warnings: string[]): ZkCaptchaClient => {
   const config = object(value);
   const mode = config.mode;
-  if (mode !== "mock" && mode !== "live") throw new InputError("请选择模拟或真实接口模式。");
-  const endpoint = config.endpoint;
+  if (mode !== "mock" && mode !== "live" && mode !== "template") {
+    throw new InputError("请选择模拟、真实接口或本地模板模式。");
+  }
+  const endpoint = mode === "template" ? "ttshitu" : config.endpoint;
   if (endpoint !== "ttshitu" && endpoint !== "zhunkuai" && endpoint !== "kuaishibie") {
     throw new InputError("接口平台无效。");
   }
-  const prices: Record<string, string> = {};
+  const prices: Record<string, string> = mode === "template" ? { "11": "0", "1005": "0" } : {};
   for (const [key, price] of Object.entries(object(config.prices ?? {}))) {
     if (typeof price !== "string") throw new InputError("自定义价格须使用字符串金额。");
     Object.defineProperty(prices, key, { value: price, enumerable: true });
   }
   const timeoutMs = positiveInteger(config.timeoutMs ?? 1000, "超时毫秒", 120_000);
   const options: ZkCaptchaClientOptions = {
-    username: text(config.username, "账号", mode === "mock" ? "demo" : undefined),
-    password: mode === "mock" ? "demo" : text(config.password, "密码"),
+    ...(mode === "template"
+      ? { algorithms: { "template-math": templateMathAlgorithm } }
+      : {
+          username: text(config.username, "账号", mode === "mock" ? "demo" : undefined),
+          password: mode === "mock" ? "demo" : text(config.password, "密码"),
+        }),
     endpoint,
     timeoutMs,
     history: {
@@ -162,7 +170,9 @@ const createClient = (value: unknown, directory: string, warnings: string[]): Zk
             retentionDays: positiveInteger(config.retentionDays, "保留天数", 36500),
           }),
     },
-    ...(config.baseUrl ? { baseUrl: text(config.baseUrl, "自定义接口") } : {}),
+    ...(mode !== "template" && config.baseUrl
+      ? { baseUrl: text(config.baseUrl, "自定义接口") }
+      : {}),
   };
   if (mode === "mock") {
     const scenario = text(config.scenario, "模拟场景", "success");
@@ -322,6 +332,10 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
         throw new InputError("请通过本地验收页面提交 JSON 请求。", 403);
       }
       const body = await readBody(request);
+      const mode = object(body.config).mode;
+      if (mode === "template" && (path === "/api/account" || path === "/api/report")) {
+        throw new InputError("本地模板算法不提供平台余额查询和报错功能。");
+      }
       const warnings: string[] = [];
       client = createClient(body.config, directory, warnings);
       let data: unknown;
@@ -329,6 +343,7 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
         case "/api/recognize": {
           const input = object(body.request);
           data = await client.recognize({
+            ...(mode === "template" ? { algorithm: "template-math" } : {}),
             image: imageFrom(input.image),
             typeid: text(input.typeid, "类型 ID", "3"),
             ...(input.imageback ? { imageback: imageFrom(input.imageback) } : {}),

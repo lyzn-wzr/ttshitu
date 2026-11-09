@@ -324,9 +324,16 @@ const setImage = (id, data, name = "未选择") => {
 
 /**
  * 生成可预览、可存储的 PNG 示例，无需网络和测试素材依赖。
- * @returns {void} 主图已设为示例。
+ * @returns {Promise<void>} 主图已设为当前模式的示例。
  */
-const sample = () => {
+const sample = async () => {
+  if (field("mode").value === "template") {
+    const response = await fetch("/math-sample.png");
+    if (!response.ok) throw new Error("模板示例图片加载失败。");
+    const file = new File([await response.blob()], "math-sample.png", { type: "image/png" });
+    setImage("image", await readImage(file), "示例 · 0−7.png");
+    return;
+  }
   const canvas = document.createElement("canvas");
   canvas.width = 240;
   canvas.height = 90;
@@ -397,23 +404,56 @@ element("settings").addEventListener("submit", (event) => {
   void run("应用配置并刷新记录", refresh);
 });
 element("settings").addEventListener("change", invalidate);
-element("mode").addEventListener("change", () => {
+/**
+ * 更新当前模式对应的控件与提示，隐藏模板模式不支持的平台操作。
+ * @returns {void} 模式相关控件已更新。
+ */
+const updateMode = () => {
   const live = field("mode").value === "live";
+  const template = field("mode").value === "template";
   element("live-fields").hidden = !live;
-  element("mock-fields").hidden = live;
+  element("mock-fields").hidden = live || template;
+  element("platform-fields").hidden = template;
+  element("platform-url").hidden = template;
+  element("account").hidden = template;
+  element("report").hidden = template;
+  element("template-note").hidden = !template;
+  element("upload-imageback").hidden = template;
+  element("upload-title_image").hidden = template;
+  field("typeid").value = template ? "11" : "3";
   field("username").value = live ? "" : "demo";
   field("password").value = "";
   field("timeout").value = live ? "60000" : "1000";
   element("environment").textContent = live
     ? "真实接口 · 识别可能产生费用"
-    : "本地模拟 · 不产生费用";
+    : template
+      ? "本地模板识别 · 不产生费用"
+      : "本地模拟 · 不产生费用";
   element("environment").classList.toggle("live", live);
   element("mode-note").textContent = live
     ? "请求将发送到所选平台，请使用自己的账号与图片。"
-    : "模拟网络响应，实际执行计价与本地存储。";
-  element("recognize-button").textContent = live ? "调用真实接口 →" : "开始模拟识别 →";
+    : template
+      ? "使用已校准模板实际识别，返回算式、答案、相似度和耗时，不调用外部平台。"
+      : "模拟网络响应，实际执行计价与本地存储。";
+  element("recognize-button").textContent = live
+    ? "调用真实接口 →"
+    : template
+      ? "开始本地识别 →"
+      : "开始模拟识别 →";
+};
+
+element("mode").addEventListener("change", () => {
+  const reloadSample =
+    !images.has("image") || element("name-image").textContent?.startsWith("示例");
+  updateMode();
+  void run("切换模式并刷新记录", async () => {
+    if (reloadSample) await sample();
+    await refresh();
+  });
 });
-element("sample").addEventListener("click", sample);
+element("sample").addEventListener("click", () => {
+  void run("载入示例图片", sample);
+});
 for (const id of ["image", "imageback", "title_image"]) {
   element(id).addEventListener("change", (event) => {
     const target = event.target;
@@ -449,7 +489,8 @@ element("recognize").addEventListener("submit", (event) => {
       },
     });
     output("recognize", data);
-    if (data.success) field("captcha-id").value = String(object(data.data).id);
+    if (data.success && field("mode").value !== "template")
+      field("captcha-id").value = String(object(data.data).id);
     offset = 0;
     await refresh();
   });
@@ -482,5 +523,11 @@ element("next").addEventListener("click", () => {
   void run("加载下一页", refresh);
 });
 element("detail").addEventListener("close", releaseDetail);
-sample();
-void run("加载本地验收记录", refresh);
+if (new URLSearchParams(location.search).get("mode") === "template") {
+  field("mode").value = "template";
+  updateMode();
+}
+void run("加载本地验收记录", async () => {
+  await sample();
+  await refresh();
+});

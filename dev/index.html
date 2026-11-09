@@ -25,21 +25,24 @@
             <label for="mode">运行模式</label>
             <select id="mode">
               <option value="mock">本地模拟</option>
+              <option value="template">本地模板识别 · 算术图</option>
               <option value="live">真实接口</option>
             </select>
             <p id="mode-note" class="hint">模拟网络响应，实际执行计价与本地存储。</p>
-            <label for="endpoint">接口平台</label>
-            <select id="endpoint">
-              <option value="ttshitu">图鉴 · ttshitu</option>
-              <option value="zhunkuai">准快 · zhunkuai</option>
-              <option value="kuaishibie">快识别 · kuaishibie</option>
-            </select>
-            <label for="username">账号</label
-            ><input id="username" value="demo" autocomplete="off" required />
-            <div id="live-fields" hidden>
-              <label for="password">密码</label
-              ><input id="password" type="password" autocomplete="off" />
-              <p class="hint">凭证仅用于本次页面会话，不保存到浏览器或配置文件。</p>
+            <div id="platform-fields">
+              <label for="endpoint">接口平台</label>
+              <select id="endpoint">
+                <option value="ttshitu">图鉴 · ttshitu</option>
+                <option value="zhunkuai">准快 · zhunkuai</option>
+                <option value="kuaishibie">快识别 · kuaishibie</option>
+              </select>
+              <label for="username">账号</label
+              ><input id="username" value="demo" autocomplete="off" required />
+              <div id="live-fields" hidden>
+                <label for="password">密码</label
+                ><input id="password" type="password" autocomplete="off" />
+                <p class="hint">凭证仅用于本次页面会话，不保存到浏览器或配置文件。</p>
+              </div>
             </div>
             <div id="mock-fields">
               <label for="scenario">模拟场景</label>
@@ -56,8 +59,10 @@
             </div>
             <details class="advanced">
               <summary>更多配置</summary>
-              <label for="base-url">自定义接口地址</label
-              ><input id="base-url" placeholder="留空使用平台默认地址" autocomplete="off" />
+              <div id="platform-url">
+                <label for="base-url">自定义接口地址</label
+                ><input id="base-url" placeholder="留空使用平台默认地址" autocomplete="off" />
+              </div>
               <label for="timeout">超时 / 毫秒</label
               ><input id="timeout" type="number" min="1" max="120000" value="1000" required />
               <label for="retention">保留天数</label
@@ -74,7 +79,7 @@
         </form>
         <div class="storage-note">
           <span class="section-label">LOCAL STORAGE</span><code>.zk-captcha/acceptance/</code>
-          <p>模拟与真实模式分库保存；账号、平台之间由 SDK 隔离。刷新页面后记录仍保留。</p>
+          <p>模拟、真实和模板模式分库保存；账号、平台之间由 SDK 隔离。刷新页面后记录仍保留。</p>
         </div>
       </aside>
       <main>
@@ -94,6 +99,10 @@
               <button class="text-button" id="sample" type="button">载入示例图片 ↗</button>
             </div>
             <form id="recognize">
+              <p id="template-note" class="hint" hidden>
+                仅支持原样式的 130×48
+                彩色粗体算术图，支持加、减、乘和负数。匹配分数是相似度，不是正确概率；不确定时会拒识。
+              </p>
               <fieldset>
                 <div class="uploads">
                   <div class="upload">
@@ -118,7 +127,7 @@
                       </button>
                     </div>
                   </div>
-                  <div class="upload">
+                  <div class="upload" id="upload-imageback">
                     <label class="upload-target" for="imageback"
                       ><span>背景图 <em>可选</em></span
                       ><img id="preview-imageback" alt="背景图预览" hidden /><span
@@ -140,7 +149,7 @@
                       </button>
                     </div>
                   </div>
-                  <div class="upload">
+                  <div class="upload" id="upload-title_image">
                     <label class="upload-target" for="title_image"
                       ><span>标题图 <em>可选</em></span
                       ><img id="preview-title_image" alt="标题图预览" hidden /><span
@@ -171,6 +180,8 @@
                     >
                       <option value="3">数英混合</option>
                       <option value="7">无感学习</option>
+                      <option value="11">计算题</option>
+                      <option value="1005">快速计算题</option>
                       <option value="16">汉字</option>
                       <option value="32">通用文字识别</option>
                       <option value="1033">拖动拼图</option>

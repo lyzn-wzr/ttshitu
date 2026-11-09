@@ -105,6 +105,77 @@ describe("local manual acceptance environment", () => {
     expect((await fetch(`${url}/../package.json`)).status).toBe(404);
   });
 
+  it("runs the template algorithm through the SDK and isolates it from platform modes", async () => {
+    const { url, post } = await fixture();
+    const sample = await fetch(`${url}/math-sample.png`);
+    expect(sample.status).toBe(200);
+    const templateImage = Buffer.from(await sample.arrayBuffer()).toString("base64");
+    const templateConfig = {
+      mode: "template",
+      username: "",
+      password: "",
+      baseUrl: "https://unused.invalid",
+    };
+    expect(
+      await (
+        await post(
+          "/api/recognize",
+          { request: { image: templateImage, typeid: "11" } },
+          templateConfig,
+        )
+      ).json(),
+    ).toMatchObject({
+      data: {
+        success: true,
+        data: {
+          result: "-7",
+          expression: "0-7",
+          score: expect.any(Number),
+          durationMs: expect.any(Number),
+        },
+      },
+      warnings: [],
+    });
+    expect(
+      await (
+        await post("/api/recognize", { request: { image, typeid: "11" } }, templateConfig)
+      ).json(),
+    ).toMatchObject({
+      data: { success: false, code: "TEMPLATE_REJECTED" },
+    });
+    expect(
+      await (
+        await post(
+          "/api/recognize",
+          { request: { image: templateImage, typeid: "3" } },
+          templateConfig,
+        )
+      ).json(),
+    ).toMatchObject({
+      data: { success: false, code: "UNSUPPORTED_TYPE" },
+    });
+    expect(await (await post("/api/history", {}, templateConfig)).json()).toMatchObject({
+      data: {
+        page: {
+          total: 3,
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              algorithm: "template-math",
+              result: "-7",
+              price: "0.000000",
+            }),
+          ]),
+        },
+        stats: { summary: { total: 3, successCount: 1, failureCount: 2 } },
+      },
+    });
+    expect(await (await post("/api/history")).json()).toMatchObject({
+      data: { page: { total: 0 } },
+    });
+    expect((await post("/api/account", {}, templateConfig)).status).toBe(400);
+    expect((await post("/api/report", { id: "template-id" }, templateConfig)).status).toBe(400);
+  });
+
   it("persists real image bytes, prices, account isolation and history across requests", async () => {
     const { post } = await fixture();
     const response = await post("/api/recognize", {
