@@ -1,6 +1,6 @@
 # zk-captcha
 
-面向图鉴/准快/快识别平台验证码识别的SDK。
+面向图鉴/准快/快识别平台验证码识别的SDK，支持本地函数与 HTTP 自定义算法。
 
 仅支持 **Node 22.13+ / Bun 1.4.4+**，使用原生 `fetch` 和内置 `node:sqlite`，没有第三方运行时依赖。
 发布 ESM、CommonJS 和 TypeScript 类型，默认在使用此 SDK 的项目中保存识别记录。
@@ -114,7 +114,7 @@ const client = new ZkCaptchaClient({
 
 ## 图片识别
 
-`recognize` 调用 `POST /predict`，使用 JSON 请求体和 base64 图片字段。
+未指定 `algorithm` 时，`recognize` 调用平台的 `POST /predict`，使用 JSON 请求体和 base64 图片字段。
 
 ```ts
 const response = await client.recognize({
@@ -141,6 +141,86 @@ await client.recognize({
   imageback: backgroundBase64,
 });
 ```
+
+## 自定义算法
+
+创建客户端时通过 `algorithms` 注册多个算法，每个算法可声明多个 `typeids`。
+调用时显式传入 `algorithm`，其余仍使用 `recognize`、`recognizeOrThrow` 或文件辅助方法。
+只使用自定义算法时，无需配置平台账号密码，也无需为 SDK 安装图片处理依赖。
+
+```ts
+import { randomUUID } from "node:crypto";
+import { ZkCaptchaClient } from "@lyzn/zk-captcha";
+import { recognizeImage } from "./my-recognizer"; // 业务提供的识别实现，返回结果字符串
+
+const client = new ZkCaptchaClient({
+  algorithms: {
+    localMath: {
+      kind: "local",
+      typeids: [11, 1005],
+      recognize: async (request, { signal }) => {
+        signal.throwIfAborted();
+        const result = await recognizeImage(request, signal);
+        return {
+          success: true,
+          code: "0",
+          message: "success",
+          data: { id: randomUUID(), result },
+        };
+      },
+    },
+    remoteMath: {
+      kind: "http",
+      typeids: [11, 1005],
+      url: "http://127.0.0.1:8000/recognize",
+      headers: { authorization: "Bearer your-algorithm-token" },
+    },
+  },
+});
+
+try {
+  const data = await client.recognizeOrThrow({
+    algorithm: "localMath", // 改为 remoteMath 即调用 HTTP 算法
+    typeid: 11,
+    image: "图片纯base64",
+  });
+  console.log(data.result);
+} finally {
+  await client.close();
+}
+```
+
+本地回调接收 `ZkCaptchaAlgorithmRequest` 和 `ZkCaptchaAlgorithmContext`。
+HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追加 `/predict`；可保留 URL 查询参数。
+两者的请求约定一致：
+
+- `image`、可选 `imageback/title_image` 转为纯 base64；`typeid` 转为字符串，省略时为 `"3"`。
+- `angle/step/typename/remark/content/modelid` 保留原值，`extra` 保持嵌套对象，省略值为 `undefined` 的扩展项。
+- 不发送 `algorithm`，不注入平台 `username/password`。远程鉴权仅通过算法自己的 `headers` 配置，媒体类型固定为 JSON。
+- `context.signal` 合并客户端/单次超时与外部取消；HTTP 使用同一套超时、取消、禁止重定向和响应大小保护。
+
+两种算法均返回现有 `ZkCaptchaResponse<RecognizeData>`，例如：
+
+```json
+{
+  "success": true,
+  "code": "0",
+  "message": "success",
+  "data": { "id": "algorithm-generated-id", "result": "12" }
+}
+```
+
+无法确定时返回标准失败响应，例如 `{ success: false, code: "REJECTED", message: "无法确定", data: "" }`。
+成功的 `data.id` 和 `data.result` 都必须是字符串；编号由算法生成，SDK 不自动补齐。
+本地函数可同步或异步返回；抛错转为 `ALGORITHM_ERROR`，无效响应转为 `INVALID_RESPONSE`。
+超时或取消后 SDK 停止等待、忽略晚到结果并只记录一次；同步计算无法被强制中断，算法需要配合信号释放资源。
+
+算法标识和类型列表在构造时验证，并与 HTTP 请求头、地址一起保存快照，后续修改原配置不会改变客户端。
+数字类型与对应字符串等价，不同算法可以支持相同类型。未注册算法返回 `ALGORITHM_NOT_FOUND`，
+不支持的类型返回 `UNSUPPORTED_TYPE`；这些失败均不回退到其他算法或付费平台。
+
+自定义算法仅提供识别能力。`reportError/queryAccountInfo` 仍调用客户端配置的原平台；
+自定义识别编号不能用于平台报错。未配置平台账号密码时，这些接口和未指定算法的识别均返回 `MISSING_CREDENTIALS`。
 
 ## 报错
 
@@ -272,6 +352,21 @@ try {
 分页默认 20 条，单页允许 1～100 条，偏移为非负安全整数；按时间及本地 ID 倒序稳定排序。
 `recognizeOrThrow` 和文件辅助方法共用一次记录流程；文件读取或图片转换在请求前失败时不会产生识别记录。
 
+原平台与自定义算法均保存记录，明细中的 `algorithm` 为自定义算法标识，原平台为 `null`。
+旧数据库在首次读写时自动增量添加该字段，已有记录与图片保留，旧记录的算法来源为 `null`。
+明细和统计支持 `algorithm` 筛选：省略查询全部，字符串仅查询指定算法，`null` 仅查询原平台。
+不增加新的算法分组统计，现有 `byType` 仍按类型汇总筛选后的记录。
+
+```ts
+await client.getRecords({ algorithm: "localMath" });
+await client.getStats({ algorithm: "localMath", typeid: 11 });
+await client.getRecords({ algorithm: null }); // 仅原平台
+```
+
+自定义算法不使用官方参考价；显式的 `history.prices` 仍对对应类型生效，未配置时费用未知。
+省略账号的客户端沿用同一接口地址下的空账号记录范围；需要隔离时可设置不同 `username` 或记录目录。
+远程算法 URL 和鉴权头不会写入明细，查询范围仍按客户端账号及 `baseUrl/endpoint` 隔离。
+
 查询自动按账号与规范化接口地址隔离，不保存明文账号、密码、完整请求或任意扩展字段。
 保存或自动清理失败会调用 `onError`，未配置则输出警告，识别返回值保持不变；主动查询及其清理失败会抛出错误。
 
@@ -325,7 +420,7 @@ console.log(stats.byType); // 按类型编号字典序，各项含 typeid、type
 
 - `16`：成功结果的 Unicode 字符数 × 0.008 元；空结果记未知。
 - `7`：纯数英前四位合计 0.008 元，超出每位加 0.002 元；纯汉字每字 0.008 元，混合或不明确结果记未知。
-- `32`、`66`、自定义类型、私有接口及定制模型默认未知，可通过 `history.prices` 按类型指定固定价格。
+- `32`、`66`、自定义类型、自定义算法、私有接口及定制模型默认未知，可通过 `history.prices` 按类型指定固定价格。
 - 显式覆盖价格优先于所有内置规则，`"0"` 是有效零价格；`pricingSource` 为 `official`、`custom` 或 `unknown`。
 - 所有失败请求的费用均为未知，不当作免费。官方说明超时仍可能扣费，统计会单列未知费用次数。
 - 本地估算不含套餐优惠和报错退款，报错接口不会回改历史费用；平台实际消费请调用 `queryAccountInfo`。
@@ -344,11 +439,12 @@ pnpm dev
 服务只监听 `127.0.0.1`；退出终端或按 `Ctrl+C` 停止。端口占用时可在 PowerShell 中先执行 `$env:PORT = "3211"` 再启动。
 
 - **本地模拟**：不访问识别平台、不产生费用。仅替换 SDK 的 `fetch`，图片转换、响应校验、计价、SQLite 写入与查询均使用实际实现。可选成功、识别失败、超时、HTTP 500、无效 JSON、重定向、响应超限七种场景。
+- **本地模板识别（测试示例）**：打开 [模板模式](http://127.0.0.1:3210/?mode=template)，载入算术示例或上传原样式的 130×48 图片，实际识别加减乘和负数。响应包含算式、答案、相似度和耗时；不确定时拒识，不调用外部平台。此算法仅作为 `dev/` 下的自定义算法接入示例，不属于 SDK 内置能力或公开导出；成功默认零费用，`sharp` 仅为开发依赖，算法和模板资源不进入发布包。
 - **真实接口**：选择平台并填写自己的账号密码，上传图片后点击“调用真实接口”。识别可能产生平台费用；余额查询和报错也会调用真实平台。自定义接口地址可在“更多配置”中填写。
 - **记录与统计**：核对成功/失败明细、原始图片、参考费用和未知费用次数，按类型、状态和本地时间筛选，分页查看；展开分组统计可查看 SDK 返回的类型与 UTC 日期汇总。
 - **配置验证**：可修改模拟结果测试汉字等按字计价，也可设置自定义价格与保留天数，点击“应用并刷新记录”。保留天数会在读写时清理当前验收账号的过期明细和图片。
 
-验收数据保存在 `.zk-captcha/acceptance/mock/history.sqlite` 与 `.zk-captcha/acceptance/live/history.sqlite`，与常规 SDK 记录分开，重启后仍保留。账号与接口地址继续由 SDK 隔离；凭证不保存到浏览器存储或配置文件。
+验收数据分别保存在 `.zk-captcha/acceptance/` 下 `mock`、`live`、`template` 目录的 `history.sqlite`，与常规 SDK 记录分开，重启后仍保留。账号与接口地址继续由 SDK 隔离；凭证不保存到浏览器存储或配置文件。
 模拟余额固定为 100 元、消费及次数为 0，仅用于验证响应结构；本地实际请求次数和费用看记录统计。失败费用保留为未知，报错不回改历史估算费用。
 
 推荐顺序：默认模拟成功 → 查看明细原图 → 改为失败或超时后再识别 → 筛选记录并核对未知费用 → 查询余额与报错 → 重启验证持久化 → 按需切换真实接口。
