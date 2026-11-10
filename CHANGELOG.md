@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2.0.0 · 2026-11-10
+
+### 不兼容变更
+
+- 错误反馈统一为 `reportError({ recordId: 本地明细UUID })` / `reportErrorOrThrow`。不再接受平台或算法返回的识别编号，旧参数返回 `INVALID_REPORT_REQUEST`，防止自定义编号误传平台。
+- 反馈依赖同账号、同接口的本地历史；关闭记录返回 `HISTORY_DISABLED`，明细不存在或过期返回 `RECORD_NOT_FOUND`，存储失败返回 `HISTORY_ERROR`，均不联网。
+- 成功数据统一包含 `recordId`、`destination`（`local` 或 `platform`）、`result`；抛错式入口使用相同分流与数据结构。
+
+### 新增能力
+
+- SDK 按明细来源自动分流：自定义本地或 HTTP 算法只更新 `recognitionError`，无需平台凭证，不请求算法服务或线上平台；平台记录使用保存的平台编号正常报错。
+- 本地错误标记可重复执行，保留原识别结果、费用和统计；SQLite 自动增量升级并保留原数据，旧明细默认未标记。
+- 验收台统一提供“反馈识别错误”按钮，平台与自定义算法共用入口，展示实际反馈去向。
+
 ## 1.1.0 · 2026-11-10
 
 - 支持预先注册多个本地函数或 HTTP 算法，每个算法可绑定多个类型，使用 `recognize({ algorithm, ... })` 显式选择。
