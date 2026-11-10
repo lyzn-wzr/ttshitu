@@ -186,16 +186,20 @@ describe("local manual acceptance environment", () => {
     if (!isObject(record) || typeof record.id !== "string")
       throw new Error("Missing template record");
     expect(
-      await (await post("/api/mark-error", { id: record.id }, templateConfig)).json(),
-    ).toMatchObject({ data: { updated: true } });
+      await (await post("/api/report", { recordId: record.id }, templateConfig)).json(),
+    ).toMatchObject({
+      data: { success: true, data: { destination: "local", recordId: record.id } },
+    });
     expect(
       await (await post("/api/record", { id: record.id }, templateConfig)).json(),
     ).toMatchObject({ data: { recognitionError: true, success: true, result: "-7" } });
-    expect(await (await post("/api/mark-error", { id: record.id })).json()).toMatchObject({
-      data: { updated: false },
+    expect(await (await post("/api/report", { recordId: record.id })).json()).toMatchObject({
+      data: { success: false, code: "RECORD_NOT_FOUND" },
     });
     expect((await post("/api/account", {}, templateConfig)).status).toBe(400);
-    expect((await post("/api/report", { id: "template-id" }, templateConfig)).status).toBe(400);
+    expect(
+      await (await post("/api/report", { recordId: "template-id" }, templateConfig)).json(),
+    ).toMatchObject({ data: { success: false, code: "RECORD_NOT_FOUND" } });
   });
 
   it("persists real image bytes, prices, account isolation and history across requests", async () => {
@@ -238,7 +242,7 @@ describe("local manual acceptance environment", () => {
     expect((await post("/api/record", { id }, { username: "other-account" })).status).toBe(404);
     const isolated = await post("/api/history", {}, { endpoint: "zhunkuai" });
     expect(await isolated.json()).toMatchObject({ data: { page: { total: 0 } } });
-    expect((await post("/api/report", { id: "mock-platform-id" })).status).toBe(200);
+    expect((await post("/api/report", { recordId: id })).status).toBe(200);
     const account = await post("/api/account");
     expect(await account.json()).toMatchObject({
       data: { success: true, data: { balance: "100.000000" } },

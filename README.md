@@ -219,31 +219,36 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 数字类型与对应字符串等价，不同算法可以支持相同类型。未注册算法返回 `ALGORITHM_NOT_FOUND`，
 不支持的类型返回 `UNSUPPORTED_TYPE`；这些失败均不回退到其他算法或付费平台。
 
-自定义算法支持本地错误标记：`await client.markRecognitionError(record.id)`，参数是明细的本地 UUID。
-只更新当前账号与接口下自定义算法记录的 `recognitionError` 字段，不联网，不改变原响应、费用和统计；
-记录不存在或来自平台时返回 `false`，关闭历史记录或数据库写入失败时抛错。重复标记返回 `true`。
+错误反馈统一使用 `reportError` / `reportErrorOrThrow`，SDK 根据本地明细的 `algorithm` 自动分流。
+自定义算法只更新本地 `recognitionError`；平台记录调用配置平台的 `POST /reporterror.json`。
+自定义 HTTP 算法也只标记本地，不向算法服务或验证码平台发送反馈。余额查询仍使用 `queryAccountInfo`。
 
-`reportError/queryAccountInfo` 仍调用客户端配置的原平台；自定义识别编号不能用于平台报错。
-`reportError` 仅接受当前客户端成功识别过或本地记录能确认的平台编号；自定义来源优先拒绝（`CUSTOM_ALGORITHM_ID`），
-未知来源返回 `UNVERIFIED_CAPTCHA_ID`，均不发出网络请求。关闭历史记录后，仅能验证当前客户端的识别结果；
-跨客户端使用平台报错需要保留并共享同账号、同接口的本地历史。未配置平台账号密码时，这些接口和未指定算法的识别均返回 `MISSING_CREDENTIALS`。
+## 错误反馈
 
-## 报错
-
-`reportError` 调用 `POST /reporterror.json`。官方说明报错结果约 5 分钟后批量更新并返还次数或金额。
+参数统一为 `{ recordId: 本地明细UUID }`，不能传识别响应中的 `data.id`。
+两种来源均返回 `ZkCaptchaResponse<ReportErrorData>`；成功数据固定包含 `recordId`、`destination`（`local` 或 `platform`）和 `result`。
+`reportErrorOrThrow` 返回同一份成功数据，失败时抛出 `ZkCaptchaApiError`。
 
 ```ts
-const result = await client.recognize({
-  typeid: 3,
-  image: "图片纯base64",
-});
-
-if (result.success) {
-  await client.reportError({
-    id: result.data.id,
-  });
+// 从明细列表或明细页面取得需要反馈的记录，不必判断其算法来源。
+const page = await client.getRecords();
+const record = page.items[0];
+if (record) {
+  const response = await client.reportError({ recordId: record.id });
+  if (response.success) console.log(response.data.destination, response.data.result);
 }
 ```
+
+自定义算法反馈无需平台账号密码，可重复调用，不改变原识别结果、费用和统计。
+平台反馈仅使用明细保存的平台编号，保留平台的失败、超时和取消行为，不标记本地错误；退款不会回改历史费用。
+官方服务通常约 5 分钟后批量处理退款。
+
+错误反馈依赖本地历史：`history: false` 返回 `HISTORY_DISABLED`；明细不存在、过期或不属于当前账号及接口时返回 `RECORD_NOT_FOUND`；
+读取或更新数据库失败返回 `HISTORY_ERROR`；平台记录没有成功识别编号返回 `INVALID_CAPTCHA_ID`。
+上述失败均不请求平台。平台反馈缺少凭证返回 `MISSING_CREDENTIALS`，自定义算法反馈不受影响。
+
+从 1.x 升级时，将 `reportError({ id: 平台编号 })` 改为 `reportError({ recordId: 本地明细UUID })`，并保持本地历史开启；
+旧版调用返回 `INVALID_REPORT_REQUEST`。跨客户端反馈需共享同账号、同接口的本地历史。
 
 ## 余额查询
 

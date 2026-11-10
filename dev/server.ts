@@ -318,14 +318,9 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
         return;
       }
       if (
-        ![
-          "/api/recognize",
-          "/api/account",
-          "/api/report",
-          "/api/history",
-          "/api/record",
-          "/api/mark-error",
-        ].includes(path)
+        !["/api/recognize", "/api/account", "/api/report", "/api/history", "/api/record"].includes(
+          path,
+        )
       ) {
         throw new InputError("路径不存在。", 404);
       }
@@ -338,8 +333,8 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
       }
       const body = await readBody(request);
       const mode = object(body.config).mode;
-      if (mode === "template" && (path === "/api/account" || path === "/api/report")) {
-        throw new InputError("本地模板算法不提供平台余额查询和报错功能。");
+      if (mode === "template" && path === "/api/account") {
+        throw new InputError("本地模板算法不提供平台余额查询。");
       }
       const warnings: string[] = [];
       client = createClient(body.config, directory, warnings);
@@ -361,10 +356,7 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
           data = await client.queryAccountInfo();
           break;
         case "/api/report":
-          data = await client.reportError({ id: text(body.id, "平台识别编号") });
-          break;
-        case "/api/mark-error":
-          data = { updated: await client.markRecognitionError(text(body.id, "本地记录编号")) };
+          data = await client.reportError({ recordId: text(body.recordId, "本地记录编号") });
           break;
         case "/api/history": {
           const filter = filterFrom(body.filter);

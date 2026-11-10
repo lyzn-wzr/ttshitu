@@ -282,13 +282,13 @@ const refresh = async () => {
         void run("加载识别明细", () => showDetail(String(item.id)));
       });
       action.append(button);
-      if (item.algorithm !== null && !item.recognitionError) {
-        const mark = node("button", "标记识别错误", "text-button");
+      if (!item.recognitionError && (item.algorithm !== null || item.success)) {
+        const mark = node("button", "反馈识别错误", "text-button");
         mark.type = "button";
         mark.addEventListener("click", () => {
-          void run("标记本地识别错误", async () => {
-            const data = await api("/api/mark-error", { id: item.id });
-            if (!data.updated) throw new Error("记录不存在、已过期或不属于自定义算法。");
+          void run("反馈识别错误", async () => {
+            const data = await api("/api/report", { recordId: item.id });
+            output("reportError", data);
             await refresh();
           });
         });
@@ -403,7 +403,6 @@ const invalidate = () => {
     element(id).textContent = "—";
   element("records").replaceChildren();
   element("group-stats").textContent = "配置已修改，请重新查询。";
-  field("captcha-id").value = "";
   element("output-label").textContent = "等待调用";
   element("output").textContent = "配置已修改，请发起调用或应用并刷新记录。";
   element("status").textContent = "配置已修改，下一次操作将使用新配置。";
@@ -429,7 +428,6 @@ const updateMode = () => {
   element("platform-fields").hidden = template;
   element("platform-url").hidden = template;
   element("account").hidden = template;
-  element("report").hidden = template;
   element("template-note").hidden = !template;
   element("upload-imageback").hidden = template;
   element("upload-title_image").hidden = template;
@@ -491,7 +489,6 @@ for (const id of ["image", "imageback", "title_image"]) {
 element("recognize").addEventListener("submit", (event) => {
   event.preventDefault();
   void run("调用识别并保存记录", async () => {
-    field("captcha-id").value = "";
     const data = await api("/api/recognize", {
       request: {
         image: images.get("image"),
@@ -502,20 +499,12 @@ element("recognize").addEventListener("submit", (event) => {
       },
     });
     output("recognize", data);
-    if (data.success && field("mode").value !== "template")
-      field("captcha-id").value = String(object(data.data).id);
     offset = 0;
     await refresh();
   });
 });
 element("account").addEventListener("click", () => {
   void run("查询账号余额", async () => output("queryAccountInfo", await api("/api/account")));
-});
-element("report").addEventListener("submit", (event) => {
-  event.preventDefault();
-  void run("上报识别错误", async () =>
-    output("reportError", await api("/api/report", { id: field("captcha-id").value })),
-  );
 });
 element("filters").addEventListener("submit", (event) => {
   event.preventDefault();
