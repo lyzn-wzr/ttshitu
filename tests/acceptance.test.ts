@@ -172,6 +172,28 @@ describe("local manual acceptance environment", () => {
     expect(await (await post("/api/history")).json()).toMatchObject({
       data: { page: { total: 0 } },
     });
+    const history: unknown = await (await post("/api/history", {}, templateConfig)).json();
+    if (
+      !isObject(history) ||
+      !isObject(history.data) ||
+      !isObject(history.data.page) ||
+      !Array.isArray(history.data.page.items)
+    )
+      throw new Error("Missing history");
+    const record: unknown = history.data.page.items.find(
+      (item: unknown) => isObject(item) && item.result === "-7",
+    );
+    if (!isObject(record) || typeof record.id !== "string")
+      throw new Error("Missing template record");
+    expect(
+      await (await post("/api/mark-error", { id: record.id }, templateConfig)).json(),
+    ).toMatchObject({ data: { updated: true } });
+    expect(
+      await (await post("/api/record", { id: record.id }, templateConfig)).json(),
+    ).toMatchObject({ data: { recognitionError: true, success: true, result: "-7" } });
+    expect(await (await post("/api/mark-error", { id: record.id })).json()).toMatchObject({
+      data: { updated: false },
+    });
     expect((await post("/api/account", {}, templateConfig)).status).toBe(400);
     expect((await post("/api/report", { id: "template-id" }, templateConfig)).status).toBe(400);
   });

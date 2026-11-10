@@ -832,6 +832,7 @@ describe("local recognition history", () => {
     const database = new DatabaseSync(join(directory, "history.sqlite"));
     try {
       database.exec("ALTER TABLE recognition_records DROP COLUMN algorithm");
+      database.exec("ALTER TABLE recognition_records DROP COLUMN recognition_error");
     } finally {
       database.close();
     }
@@ -948,4 +949,50 @@ describe("local recognition history", () => {
     await expect(client.reportError({ id: "id" })).rejects.toThrow("已关闭");
     await expect(client.queryAccountInfo()).rejects.toThrow("已关闭");
   });
+});
+
+describe("local recognition error marks and platform report protection", () => {
+  it("persists an idempotent custom mark without changing responses, images, fees or statistics", async () => {
+    const { createClient } = await fixture();
+    const fetch = vi.fn<FetchLike>();
+    const client = createClient({
+      fetch,
+      algorithms: {
+        local: { kind: "local", typeids: [3], recognize: () => successBody() },
+      },
+    });
+    await client.recognize({ algorithm: "local", image: "AQID" });
+    const record = (await client.getRecords()).items[0];
+    if (!record) throw new Error("Missing record");
+    const detail = await client.getRecord(record.id);
+    const stats = await client.getStats();
+    expect(record.recognitionError).toBe(false);
+    expect(await client.markRecognitionError(record.id)).toBe(true);
+    expect(await client.markRecognitionError(record.id)).toBe(true);
+    expect(await client.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
+    expect(await client.getStats()).toEqual(stats);
+    await client.close();
+    const reopened = createClient({ fetch });
+    expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects platform, unknown and other-account records for local marking", async () => {
+    const { createClient } = await fixture();
+    const client = createClient();
+    await client.recognize({ image: "AQID" });
+    const record = (await client.getRecords()).items[0];
+    if (!record) throw new Error("Missing record");
+    expect(await client.markRecognitionError(record.id)).toBe(false);
+    expect(await client.markRecognitionError("missing")).toBe(false);
+    const other = createClient({ username: "other" });
+    expect(await other.markRecognitionError(record.id)).toBe(false);
+    expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
+    await expect(createClient({ history: false }).markRecognitionError(record.id)).rejects.toThrow(
+      "记录功能未开启",
+    );
+    await client.close();
+    await expect(client.markRecognitionError(record.id)).rejects.toThrow("已关闭");
+  });
+
 });

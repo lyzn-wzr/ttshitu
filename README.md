@@ -219,7 +219,11 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 数字类型与对应字符串等价，不同算法可以支持相同类型。未注册算法返回 `ALGORITHM_NOT_FOUND`，
 不支持的类型返回 `UNSUPPORTED_TYPE`；这些失败均不回退到其他算法或付费平台。
 
-自定义算法仅提供识别能力。`reportError/queryAccountInfo` 仍调用客户端配置的原平台；
+自定义算法支持本地错误标记：`await client.markRecognitionError(record.id)`，参数是明细的本地 UUID。
+只更新当前账号与接口下自定义算法记录的 `recognitionError` 字段，不联网，不改变原响应、费用和统计；
+记录不存在或来自平台时返回 `false`，关闭历史记录或数据库写入失败时抛错。重复标记返回 `true`。
+
+`reportError/queryAccountInfo` 仍调用客户端配置的原平台；
 自定义识别编号不能用于平台报错。未配置平台账号密码时，这些接口和未指定算法的识别均返回 `MISSING_CREDENTIALS`。
 
 ## 报错

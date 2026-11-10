@@ -251,6 +251,15 @@ export class ZkCaptchaClient {
   }
 
   /**
+   * 在本地标记自定义算法识别错误，不发送网络请求。
+   * @param id 本地记录 UUID，不是算法返回的编号。
+   * @returns 更新成功为 true，不存在、跨账号或平台记录为 false；未开启记录或写入失败时抛错。
+   */
+  async markRecognitionError(id: string): Promise<boolean> {
+    return this.track(() => this.getHistory().markRecognitionError(id));
+  }
+
+  /**
    * 读取总体、UTC 日期和类型统计，未知价格不作为零费用。
    * @param filter 与明细一致的时间、类型及状态条件。
    * @returns 本地记录统计，不包含平台套餐优惠和退款调整。

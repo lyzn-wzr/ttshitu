@@ -250,6 +250,8 @@ export interface RecognitionRecord {
   durationMs: number;
   /** 平台或 SDK 请求结果，不能代表业务验证结果。 */
   success: boolean;
+  /** 人工标记的自定义算法识别错误，不改变原请求状态或统计。 */
+  recognitionError: boolean;
   /** 成功识别的文本、坐标或偏移量，失败时为 `null`。 */
   result: string | null;
   /** 平台或 SDK 返回的状态码。 */

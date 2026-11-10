@@ -318,9 +318,14 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
         return;
       }
       if (
-        !["/api/recognize", "/api/account", "/api/report", "/api/history", "/api/record"].includes(
-          path,
-        )
+        ![
+          "/api/recognize",
+          "/api/account",
+          "/api/report",
+          "/api/history",
+          "/api/record",
+          "/api/mark-error",
+        ].includes(path)
       ) {
         throw new InputError("路径不存在。", 404);
       }
@@ -357,6 +362,9 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
           break;
         case "/api/report":
           data = await client.reportError({ id: text(body.id, "平台识别编号") });
+          break;
+        case "/api/mark-error":
+          data = { updated: await client.markRecognitionError(text(body.id, "本地记录编号")) };
           break;
         case "/api/history": {
           const filter = filterFrom(body.filter);

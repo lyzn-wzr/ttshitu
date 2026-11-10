@@ -20,7 +20,7 @@ import type {
 } from "./types";
 
 const recordColumns = `id, captcha_id, algorithm, typeid, type_name, started_at, duration_ms,
-  success, result, code, message, price_micros, pricing_source`;
+  success, result, code, message, price_micros, pricing_source, recognition_error`;
 const summaryColumns = `COUNT(*) AS total, COALESCE(SUM(success), 0) AS success_count,
   COALESCE(AVG(duration_ms), 0) AS average_duration_ms,
   COALESCE(SUM(price_micros), 0) AS estimated_cost,
@@ -94,7 +94,7 @@ export class HistoryStore {
       database
         .prepare(`INSERT INTO recognition_records (
           ${recordColumns}, scope_key, image, imageback, title_image
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           randomUUID(),
           response.success ? response.data.id : null,
@@ -109,6 +109,7 @@ export class HistoryStore {
           response.message,
           price.micros,
           price.source,
+          0,
           account,
           imageBytes(body.image),
           imageBytes(body.imageback),
@@ -179,6 +180,22 @@ export class HistoryStore {
           imageback: bytesValue(row.imageback),
           title_image: bytesValue(row.title_image),
         };
+  }
+
+  /**
+   * 只标记当前账号的自定义算法记录，保留原响应、费用和统计。
+   * @param id 本地记录 UUID，不能使用算法返回的编号。
+   * @returns 是否存在并更新了自定义算法记录；数据库失败直接抛错。
+   */
+  markRecognitionError(id: string): boolean {
+    const database = this.getDatabase();
+    this.cleanupExpired(database);
+    return (
+      database
+        .prepare(`UPDATE recognition_records SET recognition_error = 1
+      WHERE scope_key = ? AND id = ? AND algorithm IS NOT NULL`)
+        .run(this.scopeKey, id).changes > 0
+    );
   }
 
   /**
@@ -265,6 +282,11 @@ export class HistoryStore {
         const columns = database.prepare("PRAGMA table_info(recognition_records)").all();
         if (!columns.some((column) => column.name === "algorithm")) {
           database.exec("ALTER TABLE recognition_records ADD COLUMN algorithm TEXT");
+        }
+        if (!columns.some((column) => column.name === "recognition_error")) {
+          database.exec(
+            "ALTER TABLE recognition_records ADD COLUMN recognition_error INTEGER NOT NULL DEFAULT 0 CHECK(recognition_error IN (0, 1))",
+          );
         }
         database.exec("COMMIT");
       } catch (error) {
@@ -488,6 +510,7 @@ const readRecord = (row: Record<string, SQLOutputValue>): RecognitionRecord => {
     startedAt: stringValue(row.started_at),
     durationMs: numberValue(row.duration_ms),
     success: success === 1n,
+    recognitionError: integerValue(row.recognition_error) === 1n,
     result: nullableString(row.result),
     code: stringValue(row.code),
     message: stringValue(row.message),

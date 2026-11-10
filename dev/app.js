@@ -282,6 +282,19 @@ const refresh = async () => {
         void run("加载识别明细", () => showDetail(String(item.id)));
       });
       action.append(button);
+      if (item.algorithm !== null && !item.recognitionError) {
+        const mark = node("button", "标记识别错误", "text-button");
+        mark.type = "button";
+        mark.addEventListener("click", () => {
+          void run("标记本地识别错误", async () => {
+            const data = await api("/api/mark-error", { id: item.id });
+            if (!data.updated) throw new Error("记录不存在、已过期或不属于自定义算法。");
+            await refresh();
+          });
+        });
+        action.append(mark);
+      }
+      if (item.recognitionError) state.append(node("span", "识别错误（本地）", "badge failure"));
       const result = node("td", item.result ?? item.code);
       result.title = String(item.message ?? "");
       row.append(
