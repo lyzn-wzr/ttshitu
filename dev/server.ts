@@ -143,7 +143,7 @@ const createClient = (value: unknown, directory: string, warnings: string[]): Zk
   if (endpoint !== "ttshitu" && endpoint !== "zhunkuai" && endpoint !== "kuaishibie") {
     throw new InputError("接口平台无效。");
   }
-  const prices: Record<string, string> = mode === "template" ? { "11": "0", "1005": "0" } : {};
+  const prices: Record<string, string> = mode === "template" ? { "template-math": "0" } : {};
   for (const [key, price] of Object.entries(object(config.prices ?? {}))) {
     if (typeof price !== "string") throw new InputError("自定义价格须使用字符串金额。");
     Object.defineProperty(prices, key, { value: price, enumerable: true });
@@ -343,7 +343,6 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
         case "/api/recognize": {
           const input = object(body.request);
           data = await client.recognize({
-            ...(mode === "template" ? { algorithm: "template-math" } : {}),
             image: imageFrom(input.image),
             typeid: text(input.typeid, "类型 ID", "3"),
             ...(input.imageback ? { imageback: imageFrom(input.imageback) } : {}),

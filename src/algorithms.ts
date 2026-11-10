@@ -1,9 +1,10 @@
+import { getTypeName } from "./pricing";
 import type { ZkCaptchaAlgorithm, ZkCaptchaAlgorithmHandler } from "./types";
 
 /** 客户端私有配置快照，类型编号已统一为字符串。 */
 export type PreparedAlgorithm = {
-  /** 支持的类型集合。 */
-  typeids: ReadonlySet<string>;
+  /** 写入历史记录的独立类型名称。 */
+  name: string;
 } & (
   | {
       /** 本地算法。 */
@@ -23,14 +24,14 @@ export type PreparedAlgorithm = {
 
 /**
  * 在构造时校验并复制算法配置，调用方后续修改配置不会改变客户端。
- * @param algorithms 按标识注册的算法。
+ * @param algorithms 按专属类型编号注册的算法。
  * @returns 不继承对象原型键的算法映射。
  */
 export const prepareAlgorithms = (
   algorithms: Readonly<Record<string, ZkCaptchaAlgorithm>> = {},
 ): ReadonlyMap<string, PreparedAlgorithm> => {
   if (typeof algorithms !== "object" || algorithms === null || Array.isArray(algorithms)) {
-    throw new TypeError("algorithms 必须是按标识注册的算法对象。");
+    throw new TypeError("algorithms 必须是按专属 typeid 注册的算法对象。");
   }
   const result = new Map<string, PreparedAlgorithm>();
   for (const [id, algorithm] of Object.entries(algorithms)) {
@@ -40,22 +41,17 @@ export const prepareAlgorithms = (
       algorithm === null ||
       Array.isArray(algorithm)
     ) {
-      throw new TypeError("算法标识不能为空，配置必须是对象。");
+      throw new TypeError("算法 typeid 不能为空，配置必须是对象。");
     }
-    if (
-      !Array.isArray(algorithm.typeids) ||
-      algorithm.typeids.length === 0 ||
-      !algorithm.typeids.every(
-        (typeid: unknown) =>
-          (typeof typeid === "string" && typeid.trim() !== "") ||
-          (typeof typeid === "number" && Number.isFinite(typeid)),
-      )
-    ) {
-      throw new TypeError(`算法 ${id} 的 typeids 必须是非空的字符串或有限数字列表。`);
+    if (getTypeName(id) !== null) {
+      throw new TypeError(`算法 typeid ${id} 已被线上类型占用。`);
     }
-    const typeids = new Set(algorithm.typeids.map(String));
+    if (typeof algorithm.name !== "string" || algorithm.name.trim() === "") {
+      throw new TypeError(`算法 ${id} 的 name 必须是非空字符串。`);
+    }
+    const name = algorithm.name;
     if (algorithm.kind === "local" && typeof algorithm.recognize === "function") {
-      result.set(id, { kind: "local", typeids, recognize: algorithm.recognize });
+      result.set(id, { kind: "local", name, recognize: algorithm.recognize });
     } else if (algorithm.kind === "http" && typeof algorithm.url === "string") {
       const url = new URL(algorithm.url);
       if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
@@ -75,7 +71,7 @@ export const prepareAlgorithms = (
       normalizedHeaders.set("content-type", "application/json;charset=UTF-8");
       result.set(id, {
         kind: "http",
-        typeids,
+        name,
         url: url.toString(),
         headers: Object.fromEntries(normalizedHeaders),
       });

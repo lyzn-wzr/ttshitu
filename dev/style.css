@@ -404,7 +404,7 @@ main {
 }
 .request-fields {
   display: grid;
-  grid-template-columns: 100px 1fr;
+  grid-template-columns: 160px minmax(0, 1fr);
   gap: 12px;
   margin-top: 4px;
 }

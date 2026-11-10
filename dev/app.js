@@ -431,7 +431,7 @@ const updateMode = () => {
   element("template-note").hidden = !template;
   element("upload-imageback").hidden = template;
   element("upload-title_image").hidden = template;
-  field("typeid").value = template ? "11" : "3";
+  field("typeid").value = template ? "template-math" : "3";
   field("username").value = live ? "" : "demo";
   field("password").value = "";
   field("timeout").value = live ? "60000" : "1000";

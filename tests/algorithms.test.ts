@@ -7,6 +7,7 @@ import type {
   FetchLike,
   ImageInput,
   RecognizeData,
+  ZkCaptchaAlgorithm,
   ZkCaptchaAlgorithmHandler,
   ZkCaptchaClientOptions,
   ZkCaptchaResponse,
@@ -49,29 +50,31 @@ afterEach(async () => {
 });
 
 describe("custom algorithms", () => {
-  it("selects algorithms explicitly, supports multiple types and snapshots local configuration", async () => {
+  it("selects independent algorithms by numeric or string typeid and snapshots local configuration", async () => {
     const first = vi.fn<ZkCaptchaAlgorithmHandler>(() => success("first"));
     const second = vi.fn<ZkCaptchaAlgorithmHandler>(async () => success("second"));
     const fetch = vi.fn<FetchLike>(async () => Response.json(success("platform")));
-    const typeids = [3, 11];
     const algorithms = {
-      first: { kind: "local", typeids, recognize: first },
-      second: { kind: "local", typeids: [3], recognize: second },
+      9001: { name: "本地算术识别", kind: "local", recognize: first },
+      second: { name: "另一个独立类型", kind: "local", recognize: second },
     } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
     const client = createClient({ username: "user", password: "pass", algorithms, fetch });
-    typeids.splice(0);
-    algorithms.first.recognize = second;
-    for (const typeid of [3, "11"]) {
-      expect(await client.recognizeOrThrow({ image: "AQID", algorithm: "first", typeid })).toEqual({
+    algorithms[9001].recognize = second;
+    for (const typeid of [9001, "9001"]) {
+      expect(await client.recognizeOrThrow({ image: "AQID", typeid })).toEqual({
         id: "algorithm-id",
         result: "first",
+        recordId: null,
       });
     }
-    expect(await client.recognizeOrThrow({ image: "AQID", algorithm: "second" })).toMatchObject({
+    expect(await client.recognizeOrThrow({ image: "AQID", typeid: "second" })).toMatchObject({
       result: "second",
     });
     expect(await client.recognizeOrThrow({ image: "AQID" })).toMatchObject({ result: "platform" });
     expect(first).toHaveBeenCalledTimes(2);
+    expect(first.mock.calls[0]?.[0].typeid).toBe("9001");
+    expect(first.mock.calls[1]?.[0].typeid).toBe("9001");
+    expect(second).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -91,8 +94,8 @@ describe("custom algorithms", () => {
       password: "private-password",
       fetch,
       algorithms: {
-        local: { kind: "local", typeids: [3], recognize },
-        http: { kind: "http", typeids: ["3"], url: "https://example.invalid/recognize" },
+        local: { name: "本地识别", kind: "local", recognize },
+        http: { name: "远程识别", kind: "http", url: "https://example.invalid/recognize" },
       },
     });
     const request = {
@@ -107,14 +110,14 @@ describe("custom algorithms", () => {
       modelid: 0,
       extra: { count: 2, enabled: true, value: null, omitted: undefined },
     };
-    await client.recognize({ ...request, algorithm: "local" });
-    await client.recognize({ ...request, algorithm: "http" });
+    await client.recognize({ ...request, typeid: "local" });
+    await client.recognize({ ...request, typeid: "http" });
     const normalized = recognize.mock.calls[0]?.[0];
     expect(normalized).toEqual({
       image: "AQID",
       imageback: "BAUG",
       title_image: "BwgJ",
-      typeid: "3",
+      typeid: "local",
       angle: 15,
       step: "2",
       typename: "math",
@@ -123,12 +126,15 @@ describe("custom algorithms", () => {
       modelid: 0,
       extra: { count: 2, enabled: true, value: null },
     });
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(normalized);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      ...normalized,
+      typeid: "http",
+    });
     expect(recognize.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("manual");
   });
 
-  it("uses a real HTTP endpoint and snapshots its URL, headers and types", async () => {
+  it("uses a real HTTP endpoint and snapshots its URL and headers", async () => {
     const received: unknown[] = [];
     const server = createServer(async (request, response) => {
       const chunks: Uint8Array[] = [];
@@ -149,7 +155,7 @@ describe("custom algorithms", () => {
     const headers = { authorization: "Bearer algorithm-token", "Content-Type": "text/plain" };
     const algorithm = {
       kind: "http",
-      typeids: [3],
+      name: "远程识别",
       url: `http://127.0.0.1:${address.port}/solve?model=1`,
       headers,
     } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>[string];
@@ -159,14 +165,16 @@ describe("custom algorithms", () => {
       algorithms: { remote: algorithm },
     });
     algorithm.url = "https://example.invalid/changed";
-    algorithm.typeids.length = 0;
     headers.authorization = "changed";
-    expect(await client.recognize({ image: "AQID", algorithm: "remote" })).toEqual(success());
+    expect(await client.recognize({ image: "AQID", typeid: "remote" })).toEqual({
+      ...success(),
+      data: { id: "algorithm-id", result: "12", recordId: null },
+    });
     expect(received).toEqual([
       expect.objectContaining({
         url: "/solve?model=1",
         method: "POST",
-        body: { image: "AQID", typeid: "3" },
+        body: { image: "AQID", typeid: "remote" },
         headers: expect.objectContaining({
           authorization: "Bearer algorithm-token",
           "content-type": "application/json;charset=UTF-8",
@@ -177,31 +185,37 @@ describe("custom algorithms", () => {
     expect(JSON.stringify(received)).not.toContain("platform-password");
   });
 
-  it.each(["missing", "toString", ""])(
-    "returns failure for unregistered algorithm %s without a fallback",
-    async (algorithm) => {
-      const fetch = vi.fn<FetchLike>();
-      const client = createClient({ fetch });
-      await expect(client.recognize({ image: "AQID", algorithm })).resolves.toMatchObject({
-        success: false,
-        code: "ALGORITHM_NOT_FOUND",
+  it.each(["missing", "toString", "", 9002])(
+    "uses the original platform path for unregistered typeid %s",
+    async (typeid) => {
+      const fetch = vi.fn<FetchLike>(async () => Response.json(success("platform")));
+      const recognize = vi.fn<ZkCaptchaAlgorithmHandler>(() => success());
+      const client = createClient({
+        username: "user",
+        password: "pass",
+        fetch,
+        algorithms: { local: { name: "本地识别", kind: "local", recognize } },
       });
-      expect(fetch).not.toHaveBeenCalled();
+      await expect(client.recognizeOrThrow({ image: "AQID", typeid })).resolves.toMatchObject({
+        result: "platform",
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+        typeid: String(typeid),
+        username: "user",
+        password: "pass",
+      });
+      expect(recognize).not.toHaveBeenCalled();
     },
   );
 
-  it("rejects unsupported types without executing an algorithm or platform", async () => {
-    const recognize = vi.fn<ZkCaptchaAlgorithmHandler>(() => success());
-    const fetch = vi.fn<FetchLike>();
-    const client = createClient({
-      fetch,
-      algorithms: { local: { kind: "local", typeids: [11], recognize } },
-    });
-    await expect(
-      client.recognizeOrThrow({ image: "AQID", algorithm: "local" }),
-    ).rejects.toMatchObject({ code: "UNSUPPORTED_TYPE" });
-    expect(recognize).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+  it.each([3, "11", 1005, "1033"])("rejects known platform typeid %s at construction", (typeid) => {
+    const algorithm: ZkCaptchaAlgorithm = {
+      name: "冲突类型",
+      kind: "local",
+      recognize: () => success(),
+    };
+    expect(() => createClient({ algorithms: { [typeid]: algorithm } })).toThrow("已被线上类型占用");
   });
 
   it("normalizes local failures, exceptions and invalid payloads through OrThrow", async () => {
@@ -217,14 +231,24 @@ describe("custom algorithms", () => {
     });
     // @ts-expect-error 模拟未使用 TypeScript 的调用方返回无效结果。
     recognize.mockReturnValueOnce({ success: true, data: { result: 123, id: "id" } });
+    const fetch = vi.fn<FetchLike>();
+    const other = vi.fn<ZkCaptchaAlgorithmHandler>(() => success());
     const client = createClient({
-      algorithms: { local: { kind: "local", typeids: [3], recognize } },
+      username: "user",
+      password: "pass",
+      fetch,
+      algorithms: {
+        local: { name: "本地识别", kind: "local", recognize },
+        other: { name: "另一个算法", kind: "local", recognize: other },
+      },
     });
     for (const code of ["REJECTED", "ALGORITHM_ERROR", "INVALID_RESPONSE"]) {
       await expect(
-        client.recognizeOrThrow({ image: "AQID", algorithm: "local" }),
+        client.recognizeOrThrow({ image: "AQID", typeid: "local" }),
       ).rejects.toMatchObject({ code });
     }
+    expect(fetch).not.toHaveBeenCalled();
+    expect(other).not.toHaveBeenCalled();
   });
 
   it("requires credentials only for platform operations", async () => {
@@ -241,20 +265,21 @@ describe("custom algorithms", () => {
 
   it.each([
     null,
-    { kind: "local", typeids: [], recognize: () => success() },
-    { kind: "local", typeids: [" "], recognize: () => success() },
-    { kind: "local", typeids: [Infinity], recognize: () => success() },
-    { kind: "local", typeids: [null], recognize: () => success() },
-    { kind: "local", typeids: [3], recognize: "invalid" },
-    { kind: "unknown", typeids: [3] },
-    { kind: "http", typeids: [3], url: "/relative" },
-    { kind: "http", typeids: [3], url: "ftp://example.com" },
-    { kind: "http", typeids: [3], url: "https://user:pass@example.com" },
-    { kind: "http", typeids: [3], url: "https://example.com", headers: { token: 123 } },
-    { kind: "http", typeids: [3], url: "https://example.com", headers: null },
+    [],
+    { kind: "local", recognize: () => success() },
+    { kind: "local", name: "", recognize: () => success() },
+    { kind: "local", name: " ", recognize: () => success() },
+    { kind: "local", name: 123, recognize: () => success() },
+    { kind: "local", name: "本地识别", recognize: "invalid" },
+    { kind: "unknown", name: "未知算法" },
+    { kind: "http", name: "远程识别", url: "/relative" },
+    { kind: "http", name: "远程识别", url: "ftp://example.com" },
+    { kind: "http", name: "远程识别", url: "https://user:pass@example.com" },
+    { kind: "http", name: "远程识别", url: "https://example.com", headers: { token: 123 } },
+    { kind: "http", name: "远程识别", url: "https://example.com", headers: null },
     {
       kind: "http",
-      typeids: [3],
+      name: "远程识别",
       url: "https://example.com",
       headers: { "invalid header": "value" },
     },
@@ -263,10 +288,10 @@ describe("custom algorithms", () => {
     expect(() => createClient({ algorithms: { invalid: algorithm } })).toThrow(TypeError);
   });
 
-  it("rejects empty algorithm IDs", () => {
+  it("rejects empty custom typeids", () => {
     expect(() =>
       createClient({
-        algorithms: { " ": { kind: "local", typeids: [3], recognize: () => success() } },
+        algorithms: { " ": { name: "本地识别", kind: "local", recognize: () => success() } },
       }),
     ).toThrow(TypeError);
   });
@@ -276,10 +301,10 @@ describe("custom algorithms", () => {
     controller.abort(new Error("cancelled"));
     const recognize = vi.fn<ZkCaptchaAlgorithmHandler>(() => success());
     const client = createClient({
-      algorithms: { local: { kind: "local", typeids: [3], recognize } },
+      algorithms: { local: { kind: "local", name: "本地识别", recognize } },
     });
     await expect(
-      client.recognize({ image: "AQID", algorithm: "local" }, { signal: controller.signal }),
+      client.recognize({ image: "AQID", typeid: "local" }, { signal: controller.signal }),
     ).resolves.toMatchObject({ code: "ABORTED" });
     expect(recognize).not.toHaveBeenCalled();
   });
@@ -299,12 +324,20 @@ describe("custom algorithms", () => {
           finish = resolveResult;
           announce?.();
         });
+      const fetch = vi.fn<FetchLike>();
+      const other = vi.fn<ZkCaptchaAlgorithmHandler>(() => success());
       const client = createClient({
-        algorithms: { local: { kind: "local", typeids: [3], recognize } },
+        username: "user",
+        password: "pass",
+        fetch,
+        algorithms: {
+          local: { kind: "local", name: "本地识别", recognize },
+          other: { kind: "local", name: "另一个算法", recognize: other },
+        },
       });
       const controller = new AbortController();
       const pending = client.recognize(
-        { image: "AQID", algorithm: "local" },
+        { image: "AQID", typeid: "local" },
         {
           timeoutMs: mode === "timeout" ? 10 : 0,
           signal: controller.signal,
@@ -316,6 +349,8 @@ describe("custom algorithms", () => {
         code: mode === "timeout" ? "TIMEOUT" : "ABORTED",
       });
       expect(contextSignal?.aborted).toBe(true);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(other).not.toHaveBeenCalled();
       await client.close();
       finish?.(success("late"));
     },
@@ -335,14 +370,21 @@ describe("custom algorithms", () => {
     },
     { code: "HTTP_500", respond: () => Response.json({ message: "failed" }, { status: 500 }) },
   ])("reuses HTTP protections for $code", async ({ code, respond }) => {
+    const fetch = vi.fn<FetchLike>(async () => respond());
     const client = createClient({
-      fetch: async () => respond(),
-      algorithms: { remote: { kind: "http", typeids: [3], url: "https://example.invalid/solve" } },
+      username: "user",
+      password: "pass",
+      fetch,
+      algorithms: {
+        remote: { kind: "http", name: "远程识别", url: "https://example.invalid/solve" },
+      },
     });
-    await expect(client.recognize({ image: "AQID", algorithm: "remote" })).resolves.toMatchObject({
+    await expect(client.recognize({ image: "AQID", typeid: "remote" })).resolves.toMatchObject({
       success: false,
       code,
     });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://example.invalid/solve");
   });
 
   it.each(["timeout", "cancel", "pre-cancel"])(
@@ -364,13 +406,13 @@ describe("custom algorithms", () => {
         fetch,
         timeoutMs: 1000,
         algorithms: {
-          remote: { kind: "http", typeids: [3], url: "https://example.invalid/solve" },
+          remote: { kind: "http", name: "远程识别", url: "https://example.invalid/solve" },
         },
       });
       const controller = new AbortController();
       if (mode === "pre-cancel") controller.abort(new Error("cancelled before invocation"));
       const pending = client.recognize(
-        { image: "AQID", algorithm: "remote" },
+        { image: "AQID", typeid: "remote" },
         {
           timeoutMs: mode === "timeout" ? 10 : 0,
           signal: controller.signal,

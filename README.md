@@ -114,7 +114,7 @@ const client = new ZkCaptchaClient({
 
 ## 图片识别
 
-未指定 `algorithm` 时，`recognize` 调用平台的 `POST /predict`，使用 JSON 请求体和 base64 图片字段。
+`typeid` 未匹配已注册的自定义算法时，`recognize` 调用平台的 `POST /predict`，使用 JSON 请求体和 base64 图片字段；省略 `typeid` 时使用线上默认类型 `3`。
 
 ```ts
 const response = await client.recognize({
@@ -144,8 +144,8 @@ await client.recognize({
 
 ## 自定义算法
 
-创建客户端时通过 `algorithms` 注册多个算法，每个算法可声明多个 `typeids`。
-调用时显式传入 `algorithm`，其余仍使用 `recognize`、`recognizeOrThrow` 或文件辅助方法。
+创建客户端时通过 `algorithms` 注册多个算法，键就是每个算法的专属 `typeid`，`name` 是独立的类型名称。
+调用时只需传入该 `typeid`，支持数字或字符串，数字与对应字符串等价；仍使用 `recognize`、`recognizeOrThrow` 或文件辅助方法。
 只使用自定义算法时，无需配置平台账号密码，也无需为 SDK 安装图片处理依赖。
 
 ```ts
@@ -155,9 +155,9 @@ import { recognizeImage } from "./my-recognizer"; // 业务提供的识别实现
 
 const client = new ZkCaptchaClient({
   algorithms: {
-    localMath: {
+    9001: {
+      name: "本地算术识别",
       kind: "local",
-      typeids: [11, 1005],
       recognize: async (request, { signal }) => {
         signal.throwIfAborted();
         const result = await recognizeImage(request, signal);
@@ -169,9 +169,9 @@ const client = new ZkCaptchaClient({
         };
       },
     },
-    remoteMath: {
+    "remote-math": {
+      name: "远程算术识别",
       kind: "http",
-      typeids: [11, 1005],
       url: "http://127.0.0.1:8000/recognize",
       headers: { authorization: "Bearer your-algorithm-token" },
     },
@@ -180,8 +180,7 @@ const client = new ZkCaptchaClient({
 
 try {
   const data = await client.recognizeOrThrow({
-    algorithm: "localMath", // 改为 remoteMath 即调用 HTTP 算法
-    typeid: 11,
+    typeid: 9001, // 改为 "remote-math" 即调用 HTTP 算法
     image: "图片纯base64",
   });
   console.log(data.result);
@@ -194,12 +193,12 @@ try {
 HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追加 `/predict`；可保留 URL 查询参数。
 两者的请求约定一致：
 
-- `image`、可选 `imageback/title_image` 转为纯 base64；`typeid` 转为字符串，省略时为 `"3"`。
+- `image`、可选 `imageback/title_image` 转为纯 base64；`typeid` 是命中注册键的专属编号，统一为字符串。
 - `angle/step/typename/remark/content/modelid` 保留原值，`extra` 保持嵌套对象，省略值为 `undefined` 的扩展项。
-- 不发送 `algorithm`，不注入平台 `username/password`。远程鉴权仅通过算法自己的 `headers` 配置，媒体类型固定为 JSON。
+- 不注入平台 `username/password`。远程鉴权仅通过算法自己的 `headers` 配置，媒体类型固定为 JSON。
 - `context.signal` 合并客户端/单次超时与外部取消；HTTP 使用同一套超时、取消、禁止重定向和响应大小保护。
 
-两种算法均返回现有 `ZkCaptchaResponse<RecognizeData>`，例如：
+算法实现返回 `ZkCaptchaResponse<RecognizeData>`（无需生成本地 ID），例如：
 
 ```json
 {
@@ -215,9 +214,10 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 本地函数可同步或异步返回；抛错转为 `ALGORITHM_ERROR`，无效响应转为 `INVALID_RESPONSE`。
 超时或取消后 SDK 停止等待、忽略晚到结果并只记录一次；同步计算无法被强制中断，算法需要配合信号释放资源。
 
-算法标识和类型列表在构造时验证，并与 HTTP 请求头、地址一起保存快照，后续修改原配置不会改变客户端。
-数字类型与对应字符串等价，不同算法可以支持相同类型。未注册算法返回 `ALGORITHM_NOT_FOUND`，
-不支持的类型返回 `UNSUPPORTED_TYPE`；这些失败均不回退到其他算法或付费平台。
+专属 `typeid` 和非空名称在构造时验证，不允许占用 SDK 已知线上类型编号（如 `3`、`11`、`1005`）。
+名称、识别函数及 HTTP 请求头、地址均保存快照，后续修改原配置不会改变客户端。
+命中自定义类型后只执行该算法，识别失败、异常或超时均直接返回，不切换到其他算法或付费平台。
+未注册的 `typeid` 沿用线上请求规则，不会自动寻找其他自定义算法。旧 `typeids` 配置及识别请求的 `algorithm` 参数已删除。
 
 错误反馈统一使用 `reportError` / `reportErrorOrThrow`，SDK 根据本地明细的 `algorithm` 自动分流。
 自定义算法只更新本地 `recognitionError`；平台记录调用配置平台的 `POST /reporterror.json`。
@@ -230,14 +230,19 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 `reportErrorOrThrow` 返回同一份成功数据，失败时抛出 `ZkCaptchaApiError`。
 
 ```ts
-// 从明细列表或明细页面取得需要反馈的记录，不必判断其算法来源。
-const page = await client.getRecords();
-const record = page.items[0];
-if (record) {
-  const response = await client.reportError({ recordId: record.id });
-  if (response.success) console.log(response.data.destination, response.data.result);
+const response = await client.recognize({ image: "图片纯base64", typeid: 3 });
+// 自定义算法只需将 typeid 改为已注册的专属编号，其余调用完全相同。
+if (response.success && response.data.recordId !== null) {
+  const feedback = await client.reportError({ recordId: response.data.recordId });
+  if (feedback.success) console.log(feedback.data.destination, feedback.data.result);
 }
 ```
+
+`recognize` 成功数据为 `RecognizeResult`：保留原始 `id`、`result` 和算法扩展字段，新增 `recordId`。
+`recordId` 是 SDK 保存的本地 UUID，可直接反馈，无需查询明细；原始 `id` 仍是平台或算法编号。
+`recognizeOrThrow`、`recognizeFromFile` 和 `recognizeFromFileOrThrow` 使用同一结构。
+算法实现只需返回原始 `RecognizeData`，SDK 会覆盖上游同名字段，避免把外部编号当成本地 ID。
+历史关闭、写入或清理失败、立即过期，或请求覆盖账号导致记录不属于当前客户端时，`recordId` 为 `null`；识别成功状态和原结果不受影响。
 
 自定义算法反馈无需平台账号密码，可重复调用，不改变原识别结果、费用和统计。
 平台反馈仅使用明细保存的平台编号，保留平台的失败、超时和取消行为，不标记本地错误；退款不会回改历史费用。
@@ -363,18 +368,18 @@ try {
 分页默认 20 条，单页允许 1～100 条，偏移为非负安全整数；按时间及本地 ID 倒序稳定排序。
 `recognizeOrThrow` 和文件辅助方法共用一次记录流程；文件读取或图片转换在请求前失败时不会产生识别记录。
 
-原平台与自定义算法均保存记录，明细中的 `algorithm` 为自定义算法标识，原平台为 `null`。
+原平台与自定义算法均保存记录，自定义明细的 `typeid` 和 `algorithm` 为专属编号，`typeName` 为识别时配置的名称；原平台的 `algorithm` 为 `null`。
 旧数据库在首次读写时自动增量添加该字段，已有记录与图片保留，旧记录的算法来源为 `null`。
 明细和统计支持 `algorithm` 筛选：省略查询全部，字符串仅查询指定算法，`null` 仅查询原平台。
 不增加新的算法分组统计，现有 `byType` 仍按类型汇总筛选后的记录。
 
 ```ts
-await client.getRecords({ algorithm: "localMath" });
-await client.getStats({ algorithm: "localMath", typeid: 11 });
+await client.getRecords({ typeid: 9001 });
+await client.getStats({ typeid: "remote-math" });
 await client.getRecords({ algorithm: null }); // 仅原平台
 ```
 
-自定义算法不使用官方参考价；显式的 `history.prices` 仍对对应类型生效，未配置时费用未知。
+自定义算法不使用官方参考价；`history.prices` 按专属编号配置，例如 `{ "9001": "0", "remote-math": "0.01" }`，未配置时费用未知。
 省略账号的客户端沿用同一接口地址下的空账号记录范围；需要隔离时可设置不同 `username` 或记录目录。
 远程算法 URL 和鉴权头不会写入明细，查询范围仍按客户端账号及 `baseUrl/endpoint` 隔离。
 

@@ -6,7 +6,7 @@ SDK 不内置或导出这个模板算法，调用方安装 SDK 后也不会获�
 运行 `pnpm dev`，打开 [模板识别模式](http://127.0.0.1:3210/?mode=template)。
 可以载入 `0−7` 示例或上传同样式图片，点击“开始本地识别”，查看算式、答案、最低相似度、类别分差和算法耗时。
 
-识别器通过 SDK 的 `algorithms` 注册为 `template-math`，支持类型 `11/1005`，共用正常识别与记录流程。
+识别器通过 SDK 的 `algorithms` 注册专属类型 `template-math`，名称为“本地算术模板识别”，仅需传入 `typeid: "template-math"`，共用正常识别与记录流程。
 拒识返回 `TEMPLATE_REJECTED`，不会调用外部平台。记录位于 `.zk-captcha/acceptance/template/history.sqlite`，成功识别默认价格为零。
 
 `recognizer.ts` 复用“调研 Bun 验证码识别方案”的识别实现；唯一运行时适配是对新建排序数组使用 `sort`，以兼容项目的 ES2022 类型配置。

@@ -120,7 +120,7 @@ describe("local manual acceptance environment", () => {
       await (
         await post(
           "/api/recognize",
-          { request: { image: templateImage, typeid: "11" } },
+          { request: { image: templateImage, typeid: "template-math" } },
           templateConfig,
         )
       ).json(),
@@ -138,7 +138,11 @@ describe("local manual acceptance environment", () => {
     });
     expect(
       await (
-        await post("/api/recognize", { request: { image, typeid: "11" } }, templateConfig)
+        await post(
+          "/api/recognize",
+          { request: { image, typeid: "template-math" } },
+          templateConfig,
+        )
       ).json(),
     ).toMatchObject({
       data: { success: false, code: "TEMPLATE_REJECTED" },
@@ -152,7 +156,7 @@ describe("local manual acceptance environment", () => {
         )
       ).json(),
     ).toMatchObject({
-      data: { success: false, code: "UNSUPPORTED_TYPE" },
+      data: { success: false, code: "MISSING_CREDENTIALS" },
     });
     expect(await (await post("/api/history", {}, templateConfig)).json()).toMatchObject({
       data: {
@@ -161,12 +165,23 @@ describe("local manual acceptance environment", () => {
           items: expect.arrayContaining([
             expect.objectContaining({
               algorithm: "template-math",
+              typeid: "template-math",
+              typeName: "本地算术模板识别",
               result: "-7",
               price: "0.000000",
             }),
           ]),
         },
-        stats: { summary: { total: 3, successCount: 1, failureCount: 2 } },
+        stats: {
+          summary: { total: 3, successCount: 1, failureCount: 2 },
+          byType: expect.arrayContaining([
+            expect.objectContaining({
+              typeid: "template-math",
+              typeName: "本地算术模板识别",
+              total: 2,
+            }),
+          ]),
+        },
       },
     });
     expect(await (await post("/api/history")).json()).toMatchObject({

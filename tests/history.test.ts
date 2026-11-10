@@ -175,7 +175,9 @@ describe("local recognition history", () => {
       remark: "private-remark-not-stored",
       extra: { unrelated: "private-extension-not-stored" },
     });
-    expect(response).toEqual(successBody());
+    expect(response).toMatchObject(successBody());
+    if (!response.success) throw new Error("Recognition failed");
+    expect(response.data.recordId).toEqual(expect.any(String));
     const { items, total } = await client.getRecords();
     expect(total).toBe(1);
     const record = items[0];
@@ -516,14 +518,17 @@ describe("local recognition history", () => {
     const onError = vi.fn<(error: Error) => void>();
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const client = createClient({ history: { directory: blocked, onError } });
-    await expect(client.recognize({ image: "AQID" })).resolves.toEqual(successBody());
+    await expect(client.recognize({ image: "AQID" })).resolves.toEqual({
+      ...successBody(),
+      data: { ...successBody().data, recordId: null },
+    });
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
     await expect(client.getRecords()).rejects.toThrow(/EEXIST|ENOTDIR/);
     await expect(client.getStats()).rejects.toThrow(/EEXIST|ENOTDIR/);
     await expect(
       createClient({ history: { directory: blocked } }).recognize({ image: "AQID" }),
-    ).resolves.toEqual(successBody());
+    ).resolves.toEqual({ ...successBody(), data: { ...successBody().data, recordId: null } });
     await expect(
       createClient({
         history: {
@@ -533,7 +538,7 @@ describe("local recognition history", () => {
           },
         },
       }).recognize({ image: "AQID" }),
-    ).resolves.toEqual(successBody());
+    ).resolves.toEqual({ ...successBody(), data: { ...successBody().data, recordId: null } });
     expect(warning).toHaveBeenCalledTimes(3);
     await unlink(blocked);
     await client.recognize({ image: "AQID" });
@@ -675,7 +680,10 @@ describe("local recognition history", () => {
         return jsonResponse(successBody());
       },
     });
-    await expect(client.recognize({ image: "AQID" })).resolves.toEqual(successBody());
+    await expect(client.recognize({ image: "AQID" })).resolves.toEqual({
+      ...successBody(),
+      data: { ...successBody().data, recordId: null },
+    });
     const database = new DatabaseSync(join(directory, "history.sqlite"), { readOnly: true });
     try {
       expect(
@@ -713,7 +721,10 @@ describe("local recognition history", () => {
       vi.setSystemTime("2026-10-31T00:00:00Z");
       const onError = vi.fn<(error: Error) => void>();
       const client = createClient({ history: { directory, retentionDays: 1, onError } });
-      await expect(client.recognize({ image: "AQID" })).resolves.toEqual(successBody());
+      await expect(client.recognize({ image: "AQID" })).resolves.toEqual({
+        ...successBody(),
+        data: { ...successBody().data, recordId: null },
+      });
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0]?.[0].message).toContain("cleanup blocked");
       expect(
@@ -731,18 +742,19 @@ describe("local recognition history", () => {
   it("records algorithms once through all helpers, with source filters and independent pricing", async () => {
     const { directory, createClient } = await fixture();
     const algorithms = {
-      local: { kind: "local", typeids: [3, 11], recognize: () => successBody("local") },
-      remote: { kind: "http", typeids: [3], url: "https://example.invalid/solve" },
+      local: { kind: "local", name: "本地识别", recognize: () => successBody("local") },
+      remote: { kind: "http", name: "远程识别", url: "https://example.invalid/solve" },
     } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
     const client = createClient({ algorithms });
+    algorithms.local.name = "修改后的名称";
     const path = join(directory, "captcha.bin");
     await writeFile(path, new Uint8Array([1, 2, 3]));
     await client.recognize({ image: "AQID" });
-    await client.recognize({ image: "AQID", algorithm: "local" });
-    await client.recognizeOrThrow({ image: "AQID", algorithm: "local" });
-    await recognizeFromFile(client, path, { algorithm: "local" });
-    await recognizeFromFileOrThrow(client, path, { algorithm: "local", typeid: "11" });
-    await client.recognize({ image: "AQID", algorithm: "remote" });
+    await client.recognize({ image: "AQID", typeid: "local" });
+    await client.recognizeOrThrow({ image: "AQID", typeid: "local" });
+    await recognizeFromFile(client, path, { typeid: "local" });
+    await recognizeFromFileOrThrow(client, path, { typeid: "local" });
+    await client.recognize({ image: "AQID", typeid: "remote" });
     const all = await client.getRecords();
     expect(all.total).toBe(6);
     expect((await client.getRecords({ algorithm: "local" })).total).toBe(4);
@@ -751,12 +763,21 @@ describe("local recognition history", () => {
       price: "0.002000",
     });
     const remote = (await client.getRecords({ algorithm: "remote" })).items[0];
-    expect(remote).toMatchObject({ algorithm: "remote", price: null, pricingSource: "unknown" });
+    expect(remote).toMatchObject({
+      algorithm: "remote",
+      typeid: "remote",
+      typeName: "远程识别",
+      price: null,
+      pricingSource: "unknown",
+    });
     if (remote === undefined) throw new Error("Missing remote record");
     expect((await client.getRecord(remote.id))?.image).toEqual(new Uint8Array([1, 2, 3]));
-    expect((await client.getStats({ algorithm: "local", typeid: 3 })).summary).toMatchObject({
-      total: 3,
-      unknownPriceCount: 3,
+    expect((await client.getStats({ typeid: "local" })).byType).toEqual([
+      expect.objectContaining({ typeid: "local", typeName: "本地识别", total: 4 }),
+    ]);
+    expect((await client.getStats({ algorithm: "local", typeid: "local" })).summary).toMatchObject({
+      total: 4,
+      unknownPriceCount: 4,
     });
     expect((await client.getStats({ algorithm: null })).summary).toMatchObject({
       total: 1,
@@ -764,16 +785,18 @@ describe("local recognition history", () => {
     });
     expect((await client.getRecords({ algorithm: "local' OR 1=1 --" })).total).toBe(0);
 
-    const overridden = createClient({ algorithms, history: { directory, prices: { "3": "0" } } });
-    await overridden.recognize({ image: "AQID", algorithm: "local" });
+    const overridden = createClient({ algorithms, history: { directory, prices: { local: "0" } } });
+    await overridden.recognize({ image: "AQID", typeid: "local" });
     const custom = await overridden.getRecords({ algorithm: "local" });
     expect(custom.items.filter((record) => record.pricingSource === "custom")).toHaveLength(1);
     expect(custom.items.find((record) => record.pricingSource === "custom")?.price).toBe(
       "0.000000",
     );
     expect(custom.items.filter((record) => record.price === null)).toHaveLength(4);
+    expect(custom.items.filter((record) => record.typeName === "本地识别")).toHaveLength(4);
+    expect(custom.items.find((record) => record.price !== null)?.typeName).toBe("修改后的名称");
     await expect(
-      recognizeFromFile(client, join(directory, "missing.bin"), { algorithm: "local" }),
+      recognizeFromFile(client, join(directory, "missing.bin"), { typeid: "local" }),
     ).rejects.toThrow(/ENOENT/);
     expect((await client.getRecords()).total).toBe(7);
   });
@@ -784,42 +807,85 @@ describe("local recognition history", () => {
       algorithms: {
         rejected: {
           kind: "local",
-          typeids: [3],
+          name: "本地识别",
           recognize: () => ({ success: false, code: "REJECTED", message: "uncertain", data: "" }),
         },
         throwing: {
           kind: "local",
-          typeids: [3],
+          name: "本地识别",
           recognize: () => {
             throw new Error("failed");
           },
         },
       },
     });
-    for (const [algorithm, typeid, code] of [
-      ["missing", 3, "ALGORITHM_NOT_FOUND"],
-      ["rejected", 11, "UNSUPPORTED_TYPE"],
-      ["rejected", 3, "REJECTED"],
-      ["throwing", 3, "ALGORITHM_ERROR"],
-    ] satisfies Array<[string, number, string]>) {
-      await expect(
-        client.recognizeOrThrow({ image: "AQID", algorithm, typeid }),
-      ).rejects.toMatchObject({ code });
+    for (const [typeid, code] of [
+      ["rejected", "REJECTED"],
+      ["throwing", "ALGORITHM_ERROR"],
+    ] satisfies Array<[string, string]>) {
+      await expect(client.recognizeOrThrow({ image: "AQID", typeid })).rejects.toMatchObject({
+        code,
+      });
       expect(
-        (await client.getRecords({ algorithm })).items.some((record) => record.code === code),
+        (await client.getRecords({ typeid })).items.some((record) => record.code === code),
       ).toBe(true);
     }
     expect((await client.getStats()).summary).toMatchObject({
-      total: 4,
-      failureCount: 4,
-      unknownPriceCount: 4,
+      total: 2,
+      failureCount: 2,
+      unknownPriceCount: 2,
     });
     const image = new Blob([]);
     vi.spyOn(image, "arrayBuffer").mockRejectedValue(new Error("unreadable image"));
-    await expect(client.recognize({ image, algorithm: "rejected" })).rejects.toThrow(
+    await expect(client.recognize({ image, typeid: "rejected" })).rejects.toThrow(
       "unreadable image",
     );
-    expect((await client.getRecords()).total).toBe(4);
+    expect((await client.getRecords()).total).toBe(2);
+  });
+
+  it("keeps numeric custom typeids, names and prices independent from platform records", async () => {
+    const { directory, createClient } = await fixture();
+    const client = createClient({
+      algorithms: {
+        9001: { name: "独立数字类型", kind: "local", recognize: () => successBody() },
+      },
+      history: { directory, prices: { "3": "0.5", "9001": "0.1" } },
+    });
+    await client.recognize({ image: "AQID" });
+    await client.recognize({ image: "AQID", typeid: 9001 });
+    await client.recognize({ image: "AQID", typeid: "9001" });
+    const numeric = await client.getRecords({ typeid: 9001 });
+    expect(numeric).toEqual(await client.getRecords({ typeid: "9001" }));
+    expect(numeric.total).toBe(2);
+    expect(numeric.items).toEqual([
+      expect.objectContaining({
+        algorithm: "9001",
+        typeid: "9001",
+        typeName: "独立数字类型",
+        price: "0.100000",
+      }),
+      expect.objectContaining({
+        algorithm: "9001",
+        typeid: "9001",
+        typeName: "独立数字类型",
+        price: "0.100000",
+      }),
+    ]);
+    expect((await client.getStats({ typeid: "9001" })).byType).toEqual([
+      expect.objectContaining({
+        typeid: "9001",
+        typeName: "独立数字类型",
+        total: 2,
+        estimatedCost: "0.200000",
+      }),
+    ]);
+    expect((await client.getRecords({ algorithm: null })).items[0]).toMatchObject({
+      typeid: "3",
+      typeName: "数英混合",
+      price: "0.500000",
+    });
+    await client.close();
+    expect((await createClient().getRecords({ typeid: 9001 })).items).toEqual(numeric.items);
   });
 
   it("upgrades an old database without losing records or images, and reopens idempotently", async () => {
@@ -837,7 +903,7 @@ describe("local recognition history", () => {
       database.close();
     }
     const algorithms = {
-      local: { kind: "local", typeids: [3], recognize: () => successBody() },
+      local: { kind: "local", name: "本地识别", recognize: () => successBody() },
     } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
     const upgraded = createClient({ algorithms });
     expect(await upgraded.getRecord(original.id)).toMatchObject({
@@ -845,7 +911,7 @@ describe("local recognition history", () => {
       algorithm: null,
       image: new Uint8Array([1, 2, 3]),
     });
-    await upgraded.recognize({ image: "BAUG", algorithm: "local" });
+    await upgraded.recognize({ image: "BAUG", typeid: "local" });
     await upgraded.close();
     const reopened = createClient({ algorithms });
     expect((await reopened.getRecords()).total).toBe(2);
@@ -860,12 +926,12 @@ describe("local recognition history", () => {
       new Promise<ZkCaptchaResponse<RecognizeData>>((resolveResult) => {
         release = resolveResult;
       });
-    const algorithms = { local: { kind: "local", typeids: [3], recognize } } satisfies NonNullable<
-      ZkCaptchaClientOptions["algorithms"]
-    >;
+    const algorithms = {
+      local: { kind: "local", name: "本地识别", recognize },
+    } satisfies NonNullable<ZkCaptchaClientOptions["algorithms"]>;
     const client = createClient({ algorithms });
     await expect(
-      client.recognize({ image: "AQID", algorithm: "local" }, { timeoutMs: 10 }),
+      client.recognize({ image: "AQID", typeid: "local" }, { timeoutMs: 10 }),
     ).resolves.toMatchObject({ code: "TIMEOUT" });
     release?.(successBody("late"));
     const timedOut = await client.getRecords();
@@ -884,7 +950,7 @@ describe("local recognition history", () => {
       algorithms: {
         local: {
           kind: "local",
-          typeids: [3],
+          name: "本地识别",
           recognize: () => {
             const pending = recognize();
             announce?.();
@@ -893,15 +959,13 @@ describe("local recognition history", () => {
         },
       },
     });
-    const pending = waiting.recognize({ image: "AQID", algorithm: "local" });
+    const pending = waiting.recognize({ image: "AQID", typeid: "local" });
     await started;
     let closed = false;
     const closing = waiting.close().then(() => {
       closed = true;
     });
-    await expect(waiting.recognize({ image: "AQID", algorithm: "local" })).rejects.toThrow(
-      "已关闭",
-    );
+    await expect(waiting.recognize({ image: "AQID", typeid: "local" })).rejects.toThrow("已关闭");
     expect(closed).toBe(false);
     release?.(successBody("accepted"));
     await pending;
@@ -913,7 +977,10 @@ describe("local recognition history", () => {
   it("disables persistence completely and clearly rejects history queries", async () => {
     const { directory, createClient } = await fixture();
     const client = createClient({ history: false });
-    await expect(client.recognize({ image: "AQID" })).resolves.toEqual(successBody());
+    await expect(client.recognize({ image: "AQID" })).resolves.toEqual({
+      ...successBody(),
+      data: { ...successBody().data, recordId: null },
+    });
     await expect(client.getRecords()).rejects.toThrow("记录功能未开启");
     await expect(client.getRecord("id")).rejects.toThrow("记录功能未开启");
     await expect(client.getStats()).rejects.toThrow("记录功能未开启");
@@ -960,10 +1027,10 @@ describe("unified recognition error feedback", () => {
       password: "",
       fetch,
       algorithms: {
-        local: { kind: "local", typeids: [3], recognize: () => successBody() },
+        local: { kind: "local", name: "本地识别", recognize: () => successBody() },
       },
     });
-    await client.recognize({ algorithm: "local", image: "AQID" });
+    await client.recognize({ typeid: "local", image: "AQID" });
     const record = (await client.getRecords()).items[0];
     if (!record) throw new Error("Missing record");
     const detail = await client.getRecord(record.id);
@@ -991,11 +1058,11 @@ describe("unified recognition error feedback", () => {
   it("routes persisted platform records, including ID collisions, using only the stored platform number", async () => {
     const { createClient } = await fixture();
     const seed = createClient({
-      algorithms: { local: { kind: "local", typeids: [3], recognize: () => successBody() } },
+      algorithms: { local: { kind: "local", name: "本地识别", recognize: () => successBody() } },
     });
     await seed.recognize({ image: "AQID" });
     const platform = (await seed.getRecords()).items[0];
-    await seed.recognize({ algorithm: "local", image: "AQID" });
+    await seed.recognize({ typeid: "local", image: "AQID" });
     const custom = (await seed.getRecords({ algorithm: "local" })).items[0];
     if (!platform || !custom) throw new Error("Missing records");
     await seed.close();
@@ -1085,10 +1152,10 @@ describe("unified recognition error feedback", () => {
       username: "",
       password: "",
       algorithms: {
-        remote: { kind: "http", typeids: [3], url: "https://algorithm.invalid/recognize" },
+        remote: { kind: "http", name: "远程识别", url: "https://algorithm.invalid/recognize" },
       },
     });
-    await client.recognize({ algorithm: "remote", image: "AQID" });
+    await client.recognize({ typeid: "remote", image: "AQID" });
     const record = (await client.getRecords()).items[0];
     if (!record) throw new Error("Missing remote record");
     fetch.mockClear();
@@ -1129,5 +1196,75 @@ describe("unified recognition error feedback", () => {
       code: "HISTORY_ERROR",
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("recognition result feedback IDs", () => {
+  it.each(["platform", "local", "remote"])(
+    "returns directly usable local IDs across all recognition helpers for %s",
+    async (source) => {
+      const { directory, createClient } = await fixture();
+      const fetch = vi.fn<FetchLike>(async (url) =>
+        String(url).includes("reporterror")
+          ? jsonResponse({ success: true, data: { result: "reported" } })
+          : jsonResponse({
+              ...successBody(),
+              data: { ...successBody().data, recordId: "upstream-spoofed-id" },
+            }),
+      );
+      const upstream = Object.freeze({
+        ...successBody(),
+        data: Object.freeze({ ...successBody().data, recordId: "algorithm-spoofed-id" }),
+      });
+      const client = createClient({
+        fetch,
+        algorithms: {
+          local: { kind: "local", name: "本地识别", recognize: () => upstream },
+          remote: { kind: "http", name: "远程识别", url: "https://algorithm.invalid/recognize" },
+        },
+      });
+      const request = source === "platform" ? {} : { typeid: source };
+      const path = join(directory, "image.bin");
+      await writeFile(path, new Uint8Array([1, 2, 3]));
+      const direct = await client.recognize({ ...request, image: "AQID" });
+      const file = await recognizeFromFile(client, path, request);
+      if (!direct.success || !file.success) throw new Error("Recognition failed");
+      const results = [
+        direct.data,
+        file.data,
+        await client.recognizeOrThrow({ ...request, image: "AQID" }),
+        await recognizeFromFileOrThrow(client, path, request),
+      ];
+      const ids = new Set<string>();
+      const beforeFeedback = fetch.mock.calls.length;
+      for (const result of results) {
+        expect(result.id).toBe("platform-id");
+        expect(result.result).toBe("abcd");
+        if (result.recordId === null) throw new Error("Missing local ID");
+        expect(result.recordId).not.toContain("spoofed");
+        ids.add(result.recordId);
+        // 直接使用识别响应反馈，不通过列表或明细查找 UUID。
+        expect(await client.reportErrorOrThrow({ recordId: result.recordId })).toMatchObject({
+          recordId: result.recordId,
+          destination: source === "platform" ? "platform" : "local",
+        });
+      }
+      expect(ids.size).toBe(4);
+      expect(fetch.mock.calls.length - beforeFeedback).toBe(source === "platform" ? 4 : 0);
+      expect(upstream.data.recordId).toBe("algorithm-spoofed-id");
+      expect((await client.getRecords()).items.map((record) => record.id).sort()).toEqual(
+        [...ids].sort(),
+      );
+    },
+  );
+
+  it("does not expose another account's local ID when platform extra overrides username", async () => {
+    const { createClient } = await fixture();
+    const client = createClient();
+    expect(
+      await client.recognizeOrThrow({ image: "AQID", extra: { username: "other-account" } }),
+    ).toMatchObject({ recordId: null });
+    expect((await client.getRecords()).total).toBe(0);
+    expect((await createClient({ username: "other-account" }).getRecords()).total).toBe(1);
   });
 });

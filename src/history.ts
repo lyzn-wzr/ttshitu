@@ -67,23 +67,23 @@ export class HistoryStore {
    * @param response 已完成的识别响应。
    * @param startedAt 识别开始时间，UTC ISO 字符串。
    * @param durationMs 不含本地写入的耗时。
-   * @param algorithm 自定义算法标识；null 表示原平台。
-   * @returns 无返回值，不改变识别结果。
+   * @param algorithmName 自定义类型名称，来源标识使用请求 typeid；省略时记录为原平台。
+   * @returns 已保存且属于当前账号的本地 UUID；写入失败或账号不匹配时为 null，不改变识别结果。
    */
   record(
     body: Record<string, unknown>,
     response: ZkCaptchaResponse<RecognizeData>,
     startedAt: string,
     durationMs: number,
-    algorithm: string | null = null,
-  ): void {
+    algorithmName?: string,
+  ): string | null {
     try {
       const typeid = body.typeid === undefined ? "3" : String(body.typeid);
       const result = response.success ? response.data.result : null;
       const price = estimatePrice(
         typeid,
         result,
-        algorithm === null &&
+        algorithmName === undefined &&
           this.official &&
           (body.modelid === undefined || body.modelid === null || body.modelid === ""),
         this.prices,
@@ -91,16 +91,17 @@ export class HistoryStore {
       const account =
         typeof body.username === "string" ? scopeKey(body.username, this.baseUrl) : this.scopeKey;
       const database = this.getDatabase();
+      const id = randomUUID();
       database
         .prepare(`INSERT INTO recognition_records (
           ${recordColumns}, scope_key, image, imageback, title_image
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
-          randomUUID(),
+          id,
           response.success ? response.data.id : null,
-          algorithm,
+          algorithmName === undefined ? null : typeid,
           typeid,
-          getTypeName(typeid),
+          algorithmName ?? getTypeName(typeid),
           startedAt,
           durationMs,
           response.success ? 1 : 0,
@@ -116,11 +117,19 @@ export class HistoryStore {
           imageBytes(body.title_image),
         );
       this.cleanupExpired(database);
+      if (account !== this.scopeKey) return null;
+      // 长耗时识别可能在保存后立即过期，不能向调用方返回已清理的编号。
+      if (
+        this.options.retentionDays !== undefined &&
+        !database.prepare("SELECT id FROM recognition_records WHERE id = ?").get(id)
+      )
+        return null;
+      return id;
     } catch (error) {
       const issue = error instanceof Error ? error : new Error(String(error));
       if (this.options.onError === undefined) {
         warn(issue);
-        return;
+        return null;
       }
       try {
         void Promise.resolve(this.options.onError(issue)).catch(warn);
@@ -129,6 +138,7 @@ export class HistoryStore {
         warn(callbackError);
       }
     }
+    return null;
   }
 
   /**

@@ -60,7 +60,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 /** shortcut: 仅适配原调研 130×48 彩色粗体算术图，换字体或上线前需重新校准负样本。 */
 export const templateMathAlgorithm: ZkCaptchaAlgorithm = {
   kind: "local",
-  typeids: [11, 1005],
+  name: "本地算术模板识别",
   /**
    * 将原调研识别结果适配为 SDK 响应，低分与异常图片明确拒识。
    * @param request SDK 已转换的图片与识别类型。

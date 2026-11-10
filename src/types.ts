@@ -44,10 +44,10 @@ export type KnownCaptchaTypeId =
   | 53;
 
 /**
- * `/predict` 识别接口接受的验证码类型编号。
+ * 线上接口或已注册自定义算法的验证码类型编号。
  *
  * 已知枚举值见 {@link KnownCaptchaTypeId}。如果官方后续新增类型，或者你的兼容服务
- * 暴露了自定义模型编号，也可以继续传入任意字符串或数字。
+ * 暴露了自定义模型编号，也可以继续传入任意字符串或数字。匹配 algorithms 的键时执行自定义算法。
  */
 export type CaptchaTypeId =
   | KnownCaptchaTypeId
@@ -138,18 +138,18 @@ export interface ZkCaptchaClientOptions {
   /** 本地记录默认开启；设为 `false` 时不访问文件系统。 */
   history?: false | HistoryOptions;
 
-  /** 提前注册的自定义算法；调用 recognize 时通过 algorithm 显式选择。 */
+  /** 按专属 typeid 注册的自定义算法，不可占用已知线上类型；识别时仅传 typeid 即可选择。 */
   algorithms?: Readonly<Record<string, ZkCaptchaAlgorithm>>;
 }
 
 /** 本地与 HTTP 算法共用的输入；extra 保持嵌套，图片均为纯 base64。 */
 export interface ZkCaptchaAlgorithmRequest extends Omit<
   RecognizeRequest,
-  "algorithm" | "image" | "imageback" | "title_image" | "typeid"
+  "image" | "imageback" | "title_image" | "typeid"
 > {
   /** 主图的纯 base64 字符串。 */
   image: string;
-  /** 归一化的类型编号，未指定时为 "3"。 */
+  /** 命中算法注册键的专属类型编号，统一为字符串。 */
   typeid: string;
   /** 可选背景图的纯 base64 字符串。 */
   imageback?: string;
@@ -174,10 +174,10 @@ export type ZkCaptchaAlgorithmHandler = (
   context: ZkCaptchaAlgorithmContext,
 ) => ZkCaptchaResponse<RecognizeData> | Promise<ZkCaptchaResponse<RecognizeData>>;
 
-/** 每个算法可支持多个类型；不同算法允许支持相同类型。 */
+/** 每个算法对应一个专属类型，类型编号由 algorithms 的键指定。 */
 export type ZkCaptchaAlgorithm = {
-  /** 支持的非空类型列表，数字与对应字符串等价。 */
-  typeids: readonly CaptchaTypeId[];
+  /** 独立类型名称，保存到识别明细与统计，不使用线上类型名称。 */
+  name: string;
 } & (
   | {
       /** 进程内识别函数。 */
@@ -238,11 +238,11 @@ export interface RecognitionRecord {
   id: string;
   /** 平台返回的识别编号，失败时为 `null`。 */
   captchaId: string | null;
-  /** 自定义算法标识；原平台和升级前的记录为 null。 */
+  /** 自定义算法的专属 typeid；原平台和升级前的记录为 null。 */
   algorithm: string | null;
   /** 实际发送的类型编号，未传时记录官方默认类型 `3`。 */
   typeid: string;
-  /** 已知类型的中文名称，自定义类型为 `null`。 */
+  /** 线上类型名称或自定义算法配置名称，未知线上类型为 `null`。 */
   typeName: string | null;
   /** 识别开始时间，UTC ISO 字符串。 */
   startedAt: string;
@@ -311,26 +311,23 @@ export interface RecognitionStats {
     RecognitionSummary & {
       /** 识别类型编号。 */
       typeid: string;
-      /** 已知类型名称。 */
+      /** 线上类型名称或自定义算法配置名称。 */
       typeName: string | null;
     }
   >;
 }
 
 /**
- * 通用图片识别接口 `/predict` 的请求参数。
+ * 通用图片识别参数，按 typeid 选择已注册算法或线上接口。
  */
 export interface RecognizeRequest {
-  /** 显式选择已注册算法；省略时调用原平台，不自动回退。 */
-  algorithm?: string;
-
   /**
    * 主验证码图片，官方接口必填。
    */
   image: ImageInput;
 
   /**
-   * 验证码类型编号。不传时官方服务端按默认类型 `3` 处理。
+   * 命中已注册 typeid 时执行对应自定义算法，否则调用线上接口；不传时使用线上默认类型 `3`。
    */
   typeid?: CaptchaTypeId;
 
@@ -393,6 +390,12 @@ export interface RecognizeData {
    * 平台或算法提供的识别编号；错误反馈须使用本地明细 UUID。
    */
   id: string;
+}
+
+/** SDK 识别成功数据；原平台与自定义算法使用相同结构。 */
+export interface RecognizeResult extends RecognizeData {
+  /** 可直接传给 reportError 的本地明细 UUID；历史关闭、保存失败或记录不属于当前账号时为 null。 */
+  recordId: string | null;
 }
 
 /** 按本地明细来源自动分流的错误反馈参数。 */

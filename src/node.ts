@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { unwrap } from "./errors";
 import type { ZkCaptchaClient } from "./index";
 import type {
-  RecognizeData,
+  RecognizeResult,
   RecognizeRequest,
   ZkCaptchaRequestOptions,
   ZkCaptchaResponse,
@@ -31,7 +31,7 @@ export const recognizeFromFile = async (
   path: string | URL,
   request: Omit<RecognizeRequest, "image"> = {},
   options?: ZkCaptchaRequestOptions,
-): Promise<ZkCaptchaResponse<RecognizeData>> => {
+): Promise<ZkCaptchaResponse<RecognizeResult>> => {
   return client.recognize(
     {
       ...request,
@@ -56,6 +56,6 @@ export const recognizeFromFileOrThrow = async (
   path: string | URL,
   request: Omit<RecognizeRequest, "image"> = {},
   options?: ZkCaptchaRequestOptions,
-): Promise<RecognizeData> => {
+): Promise<RecognizeResult> => {
   return unwrap(await recognizeFromFile(client, path, request, options));
 };

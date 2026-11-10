@@ -14,6 +14,7 @@ import type {
   RecognitionPage,
   RecognitionStats,
   RecognizeData,
+  RecognizeResult,
   RecognizeRequest,
   ReportErrorData,
   ReportErrorRequest,
@@ -105,37 +106,36 @@ export class ZkCaptchaClient {
    * 调用方可以通过 `response.success` 判断并获得类型缩窄后的响应数据。
    * @param request 图片与类型等识别参数。
    * @param options 单次请求控制。
-   * @returns 原始识别响应，本地写入失败不改变该响应。
+   * @returns 成功数据附带本地 recordId；记录不可用时为 null，不改变原识别状态。
    */
   async recognize(
     request: RecognizeRequest,
     options?: ZkCaptchaRequestOptions,
-  ): Promise<ZkCaptchaResponse<RecognizeData>> {
+  ): Promise<ZkCaptchaResponse<RecognizeResult>> {
     return this.track(async () => {
       const startedAt = new Date().toISOString();
       const started = performance.now();
-      const algorithmId = request.algorithm;
-      const algorithmRequest =
-        algorithmId === undefined ? undefined : await normalizeAlgorithmRequest(request);
-      const body =
-        algorithmRequest === undefined
-          ? await this.createRecognizeBody(request)
-          : { ...algorithmRequest };
-      const response =
-        algorithmRequest === undefined
-          ? await this.requestJson(
-              "/predict",
-              {
-                body,
-                method: "POST",
-                options,
-              },
-              isRecognizeData,
-            )
-          : await this.recognizeAlgorithm(algorithmId ?? "", algorithmRequest, options);
+      /** 数字与对应字符串共用同一算法入口，异步处理前固定选择。 */
+      const typeid = String(request.typeid ?? 3);
+      const algorithm = this.algorithms.get(typeid);
+      let body: JsonObject;
+      let response: ZkCaptchaResponse<RecognizeData>;
+      if (algorithm === undefined) {
+        body = await this.createRecognizeBody(request);
+        response = await this.requestJson(
+          "/predict",
+          { body, method: "POST", options },
+          isRecognizeData,
+        );
+      } else {
+        const algorithmRequest = await normalizeAlgorithmRequest(request, typeid);
+        body = { ...algorithmRequest };
+        response = await this.recognizeAlgorithm(algorithm, algorithmRequest, options);
+      }
       const durationMs = performance.now() - started;
-      this.history?.record(body, response, startedAt, durationMs, algorithmId ?? null);
-      return response;
+      const recordId =
+        this.history?.record(body, response, startedAt, durationMs, algorithm?.name) ?? null;
+      return response.success ? { ...response, data: { ...response.data, recordId } } : response;
     });
   }
 
@@ -150,7 +150,7 @@ export class ZkCaptchaClient {
   async recognizeOrThrow(
     request: RecognizeRequest,
     options?: ZkCaptchaRequestOptions,
-  ): Promise<RecognizeData> {
+  ): Promise<RecognizeResult> {
     return unwrap(await this.recognize(request, options));
   }
 
@@ -330,24 +330,17 @@ export class ZkCaptchaClient {
   }
 
   /**
-   * 显式分发算法，不匹配或失败时不会触发平台回退。
-   * @param id 调用方选择的算法标识。
+   * 执行已由 typeid 选定的算法，失败时不再选择其他算法或平台。
+   * @param algorithm 构造时保存的算法配置快照。
    * @param request 已转换图片的标准算法请求。
    * @param options 单次取消和超时配置。
    * @returns 与平台识别相同的标准响应。
    */
   private async recognizeAlgorithm(
-    id: string,
+    algorithm: PreparedAlgorithm,
     request: ZkCaptchaAlgorithmRequest,
     options?: ZkCaptchaRequestOptions,
   ): Promise<ZkCaptchaResponse<RecognizeData>> {
-    const algorithm = this.algorithms.get(id);
-    if (algorithm === undefined) {
-      return failure("ALGORITHM_NOT_FOUND", `未注册算法：${id}。`, "");
-    }
-    if (!algorithm.typeids.has(request.typeid)) {
-      return failure("UNSUPPORTED_TYPE", `算法 ${id} 不支持类型 ${request.typeid}。`, "");
-    }
     if (algorithm.kind === "http") {
       return this.requestJson(
         "",
@@ -381,10 +374,14 @@ export class ZkCaptchaClient {
       return normalizeZkCaptchaResponse(payload, isRecognizeData);
     } catch (error) {
       if (abort.timedOut()) {
-        return failure("TIMEOUT", `算法 ${id} 超过 ${timeoutMs}ms 未完成，已自动中断。`, "");
+        return failure(
+          "TIMEOUT",
+          `算法 ${request.typeid} 超过 ${timeoutMs}ms 未完成，已自动中断。`,
+          "",
+        );
       }
       if (abort.signal.aborted) {
-        return failure("ABORTED", `算法 ${id} 已被外部信号中断。`, "");
+        return failure("ABORTED", `算法 ${request.typeid} 已被外部信号中断。`, "");
       }
       return failure("ALGORITHM_ERROR", errorMessage(error), "");
     } finally {
@@ -587,14 +584,16 @@ export const imageToBase64 = async (image: ImageInput): Promise<string> => {
 /**
  * 为本地和 HTTP 算法构造同一请求，不注入平台凭证，也不展开 extra。
  * @param request 原始识别参数。
+ * @param typeid 在图片转换前已选定的专属类型编号。
  * @returns 图片转换后的独立请求对象。
  */
 const normalizeAlgorithmRequest = async (
   request: RecognizeRequest,
+  typeid: string,
 ): Promise<ZkCaptchaAlgorithmRequest> => {
   const normalized: ZkCaptchaAlgorithmRequest = {
     image: await imageToBase64(request.image),
-    typeid: String(request.typeid ?? 3),
+    typeid,
   };
   if (request.imageback !== undefined)
     normalized.imageback = await imageToBase64(request.imageback);
