@@ -250,6 +250,17 @@ describe("ZkCaptchaClient request methods", () => {
     );
     const client = createClient(fetchImpl);
 
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        code: "0",
+        message: "success",
+        data: { id: "captcha-id", result: "abcd" },
+      }),
+    );
+    await client.recognize({ image: "AQID" });
+    fetchImpl.mockClear();
+
     const response = await client.reportError({
       id: "captcha-id",
     });
@@ -397,6 +408,17 @@ describe("ZkCaptchaClient request protection", () => {
       const paths: string[] = [];
       const server = createServer((request, response) => {
         paths.push(new URL(request.url ?? "/", "http://localhost").pathname);
+        if (method === "reportError" && request.url === "/predict") {
+          response.end(
+            JSON.stringify({
+              success: true,
+              code: "0",
+              message: "success",
+              data: { id: "id", result: "abcd" },
+            }),
+          );
+          return;
+        }
         response.writeHead(307, { location: "/forwarded" });
         response.end("redirect");
       });
@@ -408,6 +430,10 @@ describe("ZkCaptchaClient request protection", () => {
         baseUrl: `http://127.0.0.1:${address.port}`,
       });
       try {
+        if (method === "reportError") {
+          await client.recognize({ image: "AQID" });
+          paths.length = 0;
+        }
         const result =
           method === "recognize"
             ? await client.recognize({ image: "AQID" })

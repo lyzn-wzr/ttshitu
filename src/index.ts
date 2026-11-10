@@ -58,6 +58,10 @@ export class ZkCaptchaClient {
   private readonly fetchImpl: FetchLike;
   private readonly history: HistoryStore | undefined;
   private readonly algorithms: ReadonlyMap<string, PreparedAlgorithm>;
+  /** 即使历史写入失败或被关闭，也保留本客户端的自定义编号拦截证据。 */
+  private readonly customCaptchaIds = new Set<string>();
+  /** 关闭历史记录时，用于确认平台报错编号的来源。 */
+  private readonly platformCaptchaIds = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -133,6 +137,11 @@ export class ZkCaptchaClient {
               isRecognizeData,
             )
           : await this.recognizeAlgorithm(algorithmId ?? "", algorithmRequest, options);
+      if (response.success) {
+        (algorithmId === undefined ? this.platformCaptchaIds : this.customCaptchaIds).add(
+          response.data.id,
+        );
+      }
       const durationMs = performance.now() - started;
       this.history?.record(body, response, startedAt, durationMs, algorithmId ?? null);
       return response;
@@ -158,6 +167,7 @@ export class ZkCaptchaClient {
    * 调用 `/reporterror.json` 上报错误识别结果。
    *
    * 官方服务会在约 5 分钟后批量处理报错返还，因此报错成功后余额不一定立刻变化。
+   * 只接受当前客户端或本地记录能确认的平台编号，拒绝来源不明及自定义编号。
    * @param request 平台识别编号。
    * @param options 单次请求控制。
    * @returns 报错响应，不新增识别记录或重算历史费用。
@@ -166,19 +176,27 @@ export class ZkCaptchaClient {
     request: ReportErrorRequest,
     options?: ZkCaptchaRequestOptions,
   ): Promise<ZkCaptchaResponse<ReportErrorData>> {
-    return this.track(() =>
-      this.requestJson(
+    return this.track(() => {
+      if (!this.username || !this.password) {
+        return failure("MISSING_CREDENTIALS", "调用平台接口需要配置 username 和 password。", "");
+      }
+      const sources = this.history?.getCaptchaSources(request.id);
+      if (this.customCaptchaIds.has(request.id) || sources?.custom) {
+        return failure(
+          "CUSTOM_ALGORITHM_ID",
+          "自定义算法编号不能上报平台，请使用 markRecognitionError 标记本地记录。",
+          "",
+        );
+      }
+      if (!this.platformCaptchaIds.has(request.id) && !sources?.platform) {
+        return failure("UNVERIFIED_CAPTCHA_ID", "无法确认编号来自平台，已阻止线上报错。", "");
+      }
+      return this.requestJson(
         "/reporterror.json",
-        {
-          body: {
-            id: request.id,
-          },
-          method: "POST",
-          options,
-        },
+        { body: { id: request.id }, method: "POST", options },
         isReportErrorData,
-      ),
-    );
+      );
+    });
   }
 
   /**

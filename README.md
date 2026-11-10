@@ -223,8 +223,10 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 只更新当前账号与接口下自定义算法记录的 `recognitionError` 字段，不联网，不改变原响应、费用和统计；
 记录不存在或来自平台时返回 `false`，关闭历史记录或数据库写入失败时抛错。重复标记返回 `true`。
 
-`reportError/queryAccountInfo` 仍调用客户端配置的原平台；
-自定义识别编号不能用于平台报错。未配置平台账号密码时，这些接口和未指定算法的识别均返回 `MISSING_CREDENTIALS`。
+`reportError/queryAccountInfo` 仍调用客户端配置的原平台；自定义识别编号不能用于平台报错。
+`reportError` 仅接受当前客户端成功识别过或本地记录能确认的平台编号；自定义来源优先拒绝（`CUSTOM_ALGORITHM_ID`），
+未知来源返回 `UNVERIFIED_CAPTCHA_ID`，均不发出网络请求。关闭历史记录后，仅能验证当前客户端的识别结果；
+跨客户端使用平台报错需要保留并共享同账号、同接口的本地历史。未配置平台账号密码时，这些接口和未指定算法的识别均返回 `MISSING_CREDENTIALS`。
 
 ## 报错
 

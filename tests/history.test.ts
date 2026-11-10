@@ -974,6 +974,12 @@ describe("local recognition error marks and platform report protection", () => {
     await client.close();
     const reopened = createClient({ fetch });
     expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
+    for (const id of [record.captchaId ?? "", record.id]) {
+      expect(await reopened.reportError({ id })).toMatchObject({
+        success: false,
+        code: "CUSTOM_ALGORITHM_ID",
+      });
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -995,4 +1001,23 @@ describe("local recognition error marks and platform report protection", () => {
     await expect(client.markRecognitionError(record.id)).rejects.toThrow("已关闭");
   });
 
+  it("verifies persisted platform IDs and blocks unknown IDs without sending requests", async () => {
+    const { createClient } = await fixture();
+    const seed = createClient();
+    await seed.recognize({ image: "AQID" });
+    await seed.close();
+    const fetch = vi.fn<FetchLike>(async () =>
+      jsonResponse({ success: true, code: "0", message: "success", data: { result: "reported" } }),
+    );
+    const reopened = createClient({ fetch });
+    expect(await reopened.reportError({ id: "missing" })).toMatchObject({
+      code: "UNVERIFIED_CAPTCHA_ID",
+    });
+    await expect(reopened.reportErrorOrThrow({ id: "missing" })).rejects.toMatchObject({
+      code: "UNVERIFIED_CAPTCHA_ID",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await reopened.reportError({ id: "platform-id" })).success).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

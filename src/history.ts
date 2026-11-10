@@ -199,6 +199,22 @@ export class HistoryStore {
   }
 
   /**
+   * 按来源查询编号，冲突时由调用方优先拒绝自定义来源。
+   * @param id 平台或算法返回的编号，也检查误传的本地 UUID。
+   * @returns 当前账号是否有自定义来源和平台来源；不执行过期清理以保留拦截证据。
+   */
+  getCaptchaSources(id: string): { custom: boolean; platform: boolean } {
+    const rows = this.getDatabase()
+      .prepare(`SELECT algorithm, captcha_id FROM recognition_records
+      WHERE scope_key = ? AND (captcha_id = ? OR id = ?)`)
+      .all(this.scopeKey, id, id);
+    return {
+      custom: rows.some((row) => row.algorithm !== null),
+      platform: rows.some((row) => row.algorithm === null && row.captcha_id === id),
+    };
+  }
+
+  /**
    * 以同一读取快照汇总总体、UTC 日期和类型，整数微元避免累计误差。
    * @param filter 与明细一致的筛选条件。
    * @returns 仅针对本地已保存记录的统计。

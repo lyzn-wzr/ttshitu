@@ -386,3 +386,31 @@ describe("custom algorithms", () => {
     },
   );
 });
+
+describe("report provenance without history", () => {
+  it("blocks custom and unknown IDs and rejects collisions even after platform recognition", async () => {
+    const fetch = vi.fn<FetchLike>(async () => Response.json(success()));
+    const client = createClient({
+      username: "user",
+      password: "pass",
+      fetch,
+      algorithms: {
+        local: { kind: "local", typeids: [3], recognize: () => success() },
+      },
+    });
+    expect(await client.reportError({ id: "unknown" })).toMatchObject({
+      code: "UNVERIFIED_CAPTCHA_ID",
+    });
+    await client.recognize({ algorithm: "local", image: "AQID" });
+    expect(await client.reportError({ id: "algorithm-id" })).toMatchObject({
+      code: "CUSTOM_ALGORITHM_ID",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    await client.recognize({ image: "AQID" });
+    fetch.mockClear();
+    await expect(client.reportErrorOrThrow({ id: "algorithm-id" })).rejects.toMatchObject({
+      code: "CUSTOM_ALGORITHM_ID",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
