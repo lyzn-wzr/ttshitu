@@ -201,6 +201,11 @@ const filterFrom = (value: unknown): HistoryListFilter => {
     if (typeof raw.success !== "boolean") throw new InputError("success 须为布尔值。");
     filter.success = raw.success;
   }
+  if (raw.recognitionError !== undefined) {
+    if (typeof raw.recognitionError !== "boolean")
+      throw new InputError("recognitionError 须为布尔值。");
+    filter.recognitionError = raw.recognitionError;
+  }
   if (raw.limit !== undefined) filter.limit = positiveInteger(raw.limit, "每页条数", 100);
   if (raw.offset !== undefined) {
     if (typeof raw.offset !== "number" || !Number.isSafeInteger(raw.offset) || raw.offset < 0) {
@@ -355,7 +360,12 @@ export const createAcceptanceServer = (directory = resolve(".zk-captcha/acceptan
           data = await client.queryAccountInfo();
           break;
         case "/api/report":
-          data = await client.reportError({ recordId: text(body.recordId, "本地记录编号") });
+          if (body.recognitionError !== undefined && typeof body.recognitionError !== "boolean")
+            throw new InputError("recognitionError 必须为布尔值。");
+          data = await client.reportError({
+            recordId: text(body.recordId, "本地记录编号"),
+            recognitionError: body.recognitionError ?? true,
+          });
           break;
         case "/api/history": {
           const filter = filterFrom(body.filter);

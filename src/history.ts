@@ -126,19 +126,28 @@ export class HistoryStore {
         return null;
       return id;
     } catch (error) {
-      const issue = error instanceof Error ? error : new Error(String(error));
-      if (this.options.onError === undefined) {
-        warn(issue);
-        return null;
-      }
-      try {
-        void Promise.resolve(this.options.onError(issue)).catch(warn);
-      } catch (callbackError) {
-        warn(issue);
-        warn(callbackError);
-      }
+      this.notifyError(error);
     }
     return null;
+  }
+
+  /**
+   * 存储故障只通知宿主，不覆盖平台已完成的操作结果。
+   * @param error 保存、清理或标记时捕获的异常。
+   * @returns 无返回值，错误回调自身失败也不向业务传播。
+   */
+  notifyError(error: unknown): void {
+    const issue = error instanceof Error ? error : new Error(String(error));
+    if (this.options.onError === undefined) {
+      warn(issue);
+      return;
+    }
+    try {
+      void Promise.resolve(this.options.onError(issue)).catch(warn);
+    } catch (callbackError) {
+      warn(issue);
+      warn(callbackError);
+    }
   }
 
   /**
@@ -193,18 +202,19 @@ export class HistoryStore {
   }
 
   /**
-   * 只标记当前账号的自定义算法记录，保留原响应、费用和统计。
+   * 更新当前账号的错误标记，平台仅在反馈成功后写入，保留原响应、费用和统计。
    * @param id 本地记录 UUID，不能使用算法返回的编号。
-   * @returns 是否存在并更新了自定义算法记录；数据库失败直接抛错。
+   * @param recognitionError true 标记错误，false 撤回本地标记。
+   * @returns 是否存在并更新了记录；数据库失败直接抛错。
    */
-  markRecognitionError(id: string): boolean {
+  markRecognitionError(id: string, recognitionError: boolean): boolean {
     const database = this.getDatabase();
     this.cleanupExpired(database);
     return (
       database
-        .prepare(`UPDATE recognition_records SET recognition_error = 1
-      WHERE scope_key = ? AND id = ? AND algorithm IS NOT NULL`)
-        .run(this.scopeKey, id).changes > 0
+        .prepare(`UPDATE recognition_records SET recognition_error = ?
+      WHERE scope_key = ? AND id = ?`)
+        .run(recognitionError ? 1 : 0, this.scopeKey, id).changes > 0
     );
   }
 
@@ -386,6 +396,13 @@ export class HistoryStore {
       }
       clauses.push("success = ?");
       params.push(filter.success ? 1 : 0);
+    }
+    if (filter.recognitionError !== undefined) {
+      if (typeof filter.recognitionError !== "boolean") {
+        throw new TypeError("recognitionError 筛选须为布尔值。");
+      }
+      clauses.push("recognition_error = ?");
+      params.push(filter.recognitionError ? 1 : 0);
     }
     return { where: `WHERE ${clauses.join(" AND ")}`, params };
   }

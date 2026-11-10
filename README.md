@@ -226,7 +226,7 @@ HTTP 算法向配置的完整 URL 发送相同输入的 JSON POST，不自动追
 ## 错误反馈
 
 参数统一为 `{ recordId: 本地明细UUID }`，不能传识别响应中的 `data.id`。
-两种来源均返回 `ZkCaptchaResponse<ReportErrorData>`；成功数据固定包含 `recordId`、`destination`（`local` 或 `platform`）和 `result`。
+两种来源均返回 `ZkCaptchaResponse<ReportErrorData>`；成功数据固定包含 `recordId`、`destination`（`local` 或 `platform`）、`result` 和处理后的本地标记 `recognitionError`。
 `reportErrorOrThrow` 返回同一份成功数据，失败时抛出 `ZkCaptchaApiError`。
 
 ```ts
@@ -245,7 +245,12 @@ if (response.success && response.data.recordId !== null) {
 历史关闭、写入或清理失败、立即过期，或请求覆盖账号导致记录不属于当前客户端时，`recordId` 为 `null`；识别成功状态和原结果不受影响。
 
 自定义算法反馈无需平台账号密码，可重复调用，不改变原识别结果、费用和统计。
-平台反馈仅使用明细保存的平台编号，保留平台的失败、超时和取消行为，不标记本地错误；退款不会回改历史费用。
+误标时调用 `client.reportError({ recordId, recognitionError: false })` 撤回本地标记；省略此字段或传 `true` 仍为反馈错误。
+撤回同样支持 `reportErrorOrThrow`，只修改当前账号与接口下的自定义算法记录，不联网；重复撤回安全，成功数据的 `result` 为“本地识别错误标记已撤回。”。
+平台记录不支持撤回，传 `recognitionError: false` 返回 `PLATFORM_REVOKE_UNSUPPORTED`，不向平台发送请求。
+平台反馈仅使用明细保存的平台编号，保留平台的失败、超时和取消行为。成功后保存本地 `recognitionError: true`，已保存的重复反馈直接返回该状态，不再调用平台；失败不标记，退款不会回改历史费用。平台已接受但本地写入失败时仍返回成功，成功数据的 `recognitionError` 为 `false`，并通过 `history.onError` 通知存储问题，请勿因此重复上报。
+3.2 复用原有本地字段，不新增表或迁移；旧版没有保存的平台反馈无法可靠追溯，不自动补标或重新调用平台。
+平台反馈成功以成功的 HTTP 状态和布尔 `success: true` 为准，`data` 是可选回执载荷，其形态不影响反馈状态。SDK仅提取非空字符串载荷或字符串 `data.result` 作为说明，其余情况使用“平台报错成功。”；识别和余额接口仍严格校验各自的数据结构。
 官方服务通常约 5 分钟后批量处理退款。
 
 错误反馈依赖本地历史：`history: false` 返回 `HISTORY_DISABLED`；明细不存在、过期或不属于当前账号及接口时返回 `RECORD_NOT_FOUND`；
@@ -377,6 +382,8 @@ try {
 await client.getRecords({ typeid: 9001 });
 await client.getStats({ typeid: "remote-math" });
 await client.getRecords({ algorithm: null }); // 仅原平台
+await client.getRecords({ recognitionError: true }); // 本地已标错或平台已反馈
+await client.getStats({ recognitionError: false }); // 未标记记录的统计；省略查询全部
 ```
 
 自定义算法不使用官方参考价；`history.prices` 按专属编号配置，例如 `{ "9001": "0", "remote-math": "0.01" }`，未配置时费用未知。

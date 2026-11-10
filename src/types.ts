@@ -219,6 +219,8 @@ export interface HistoryFilter {
   algorithm?: string | null;
   /** 仅查询成功或失败记录，省略时包含两者。 */
   success?: boolean;
+  /** 仅查询已标记或未标记记录；已标记包含本地标错和平台反馈成功，省略时查询全部。 */
+  recognitionError?: boolean;
 }
 
 /** 时间倒序分页；同一时间按本地 ID 倒序，保证排序稳定。 */
@@ -250,7 +252,7 @@ export interface RecognitionRecord {
   durationMs: number;
   /** 平台或 SDK 请求结果，不能代表业务验证结果。 */
   success: boolean;
-  /** 人工标记的自定义算法识别错误，不改变原请求状态或统计。 */
+  /** 人工错误标记：自定义算法已标错，或平台已成功反馈；不改变原请求状态或统计。 */
   recognitionError: boolean;
   /** 成功识别的文本、坐标或偏移量，失败时为 `null`。 */
   result: string | null;
@@ -402,6 +404,8 @@ export interface RecognizeResult extends RecognizeData {
 export interface ReportErrorRequest {
   /** 本地明细 UUID，不接受平台或算法返回的识别编号。 */
   recordId: string;
+  /** 默认 true 反馈错误；false 仅撤回自定义算法的本地错误标记，不请求平台。 */
+  recognitionError?: boolean;
 }
 
 /** 本地标记与线上报错共用的成功数据。 */
@@ -412,6 +416,8 @@ export interface ReportErrorData {
   destination: "local" | "platform";
   /** 本地处理说明或平台返回的报错结果；平台省略时提供默认说明。 */
   result: string;
+  /** 处理后的本地错误标记；平台反馈成功但标记未保存时为 false，不能据此重报平台。 */
+  recognitionError: boolean;
 }
 
 /**

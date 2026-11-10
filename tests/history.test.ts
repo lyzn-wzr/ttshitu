@@ -1019,6 +1019,130 @@ describe("local recognition history", () => {
 });
 
 describe("unified recognition error feedback", () => {
+  it("filters marked and unmarked records before paging and uses the same condition for stats", async () => {
+    const { createClient } = await fixture();
+    let failed = false;
+    const client = createClient({
+      algorithms: { local: { kind: "local", name: "本地识别", recognize: () => successBody() } },
+      fetch: async (url) =>
+        jsonResponse(
+          String(url).endsWith("/reporterror.json")
+            ? { success: true, data: null }
+            : failed
+              ? { success: false, code: "-1", message: "failed", data: "" }
+              : successBody(),
+        ),
+    });
+    for (const typeid of [3, "local"]) {
+      const marked = await client.recognizeOrThrow({ image: "AQID", typeid });
+      if (!marked.recordId) throw new Error("Missing record");
+      await client.reportErrorOrThrow({ recordId: marked.recordId });
+      await client.recognizeOrThrow({ image: "AQID", typeid });
+    }
+    failed = true;
+    await client.recognize({ image: "AQID", typeid: 3 });
+    expect((await client.getRecords()).total).toBe(5);
+    const markedPage = await client.getRecords({ recognitionError: true, limit: 1, offset: 1 });
+    expect(markedPage.total).toBe(2);
+    expect(markedPage.items).toHaveLength(1);
+    expect(markedPage.items[0]?.recognitionError).toBe(true);
+    const unmarked = await client.getRecords({ recognitionError: false });
+    expect(unmarked.total).toBe(3);
+    expect(unmarked.items.every((item) => !item.recognitionError)).toBe(true);
+    const stats = await client.getStats({ recognitionError: true });
+    expect(stats.summary).toMatchObject({ total: 2, successCount: 2, failureCount: 0 });
+    expect(stats.byType.reduce((sum, item) => sum + item.total, 0)).toBe(2);
+    expect(stats.byDay.reduce((sum, item) => sum + item.total, 0)).toBe(2);
+    expect((await client.getStats({ recognitionError: false })).summary).toMatchObject({
+      total: 3,
+      failureCount: 1,
+    });
+    expect(
+      (
+        await client.getRecords({
+          algorithm: null,
+          recognitionError: true,
+          success: true,
+          typeid: 3,
+        })
+      ).total,
+    ).toBe(1);
+    expect(
+      (await client.getStats({ algorithm: "local", recognitionError: true })).summary.total,
+    ).toBe(1);
+    // @ts-expect-error JavaScript调用方的字符串不能被隐式转换为布尔筛选。
+    await expect(client.getRecords({ recognitionError: "true" })).rejects.toThrow(
+      "recognitionError",
+    );
+    // @ts-expect-error 数值零也不能代替显式false。
+    await expect(client.getStats({ recognitionError: 0 })).rejects.toThrow("recognitionError");
+  });
+
+  it("persists successful platform feedback across clients and skips repeated upstream calls", async () => {
+    const { createClient } = await fixture();
+    const fetch = vi.fn<FetchLike>(async (url) =>
+      jsonResponse(
+        String(url).endsWith("/predict") ? successBody() : { success: true, data: true },
+      ),
+    );
+    const client = createClient({ fetch });
+    const recognition = await client.recognizeOrThrow({ image: "AQID" });
+    if (!recognition.recordId) throw new Error("Missing record");
+    const before = await client.getRecord(recognition.recordId);
+    const stats = await client.getStats();
+    expect(await client.reportErrorOrThrow({ recordId: recognition.recordId })).toMatchObject({
+      destination: "platform",
+      recognitionError: true,
+    });
+    expect(await client.getRecord(recognition.recordId)).toEqual({
+      ...before,
+      recognitionError: true,
+    });
+    expect((await client.getRecords()).items[0]?.recognitionError).toBe(true);
+    expect(await client.getStats()).toEqual(stats);
+    await client.close();
+    const reopened = createClient({ fetch });
+    expect(await reopened.reportErrorOrThrow({ recordId: recognition.recordId })).toMatchObject({
+      recognitionError: true,
+    });
+    expect(
+      await reopened.reportError({ recordId: recognition.recordId, recognitionError: false }),
+    ).toMatchObject({
+      success: false,
+      code: "PLATFORM_REVOKE_UNSUPPORTED",
+    });
+    expect((await reopened.getRecord(recognition.recordId))?.recognitionError).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps platform success when the local marker cannot be saved", async () => {
+    const { directory, createClient } = await fixture();
+    const onError = vi.fn<(error: Error) => void>();
+    const fetch = vi.fn<FetchLike>(async (url) =>
+      jsonResponse(
+        String(url).endsWith("/predict") ? successBody() : { success: true, data: null },
+      ),
+    );
+    const client = createClient({ fetch, history: { directory, onError } });
+    const recognition = await client.recognizeOrThrow({ image: "AQID" });
+    if (!recognition.recordId) throw new Error("Missing record");
+    const database = new DatabaseSync(join(directory, "history.sqlite"));
+    try {
+      database.exec(
+        "CREATE TRIGGER reject_feedback BEFORE UPDATE OF recognition_error ON recognition_records BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+      );
+      expect(await client.reportError({ recordId: recognition.recordId })).toMatchObject({
+        success: true,
+        data: { destination: "platform", recognitionError: false },
+      });
+      expect(onError).toHaveBeenCalledOnce();
+      expect((await client.getRecord(recognition.recordId))?.recognitionError).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      database.close();
+    }
+  });
+
   it("persists idempotent local feedback without credentials, network, or changes to original data and stats", async () => {
     const { createClient } = await fixture();
     const fetch = vi.fn<FetchLike>();
@@ -1041,7 +1165,12 @@ describe("unified recognition error feedback", () => {
         success: true,
         code: "0",
         message: "本地识别错误已标记。",
-        data: { recordId: record.id, destination: "local", result: "本地识别错误已标记。" },
+        data: {
+          recordId: record.id,
+          destination: "local",
+          result: "本地识别错误已标记。",
+          recognitionError: true,
+        },
       });
     }
     expect(await client.reportErrorOrThrow({ recordId: record.id })).toMatchObject({
@@ -1052,7 +1181,119 @@ describe("unified recognition error feedback", () => {
     await client.close();
     const reopened = createClient({ username: "", password: "", fetch });
     expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
+    expect(
+      await reopened.reportError(
+        { recordId: record.id, recognitionError: false },
+        { signal: AbortSignal.abort() },
+      ),
+    ).toMatchObject({ code: "ABORTED" });
+    for (const options of [{ username: "other" }, { endpoint: "zhunkuai" as const }]) {
+      expect(
+        await createClient({ username: "", password: "", fetch, ...options }).reportError({
+          recordId: record.id,
+          recognitionError: false,
+        }),
+      ).toMatchObject({ code: "RECORD_NOT_FOUND" });
+    }
+    expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
+    for (let count = 0; count < 2; count++) {
+      expect(
+        await reopened.reportErrorOrThrow({ recordId: record.id, recognitionError: false }),
+      ).toEqual({
+        recordId: record.id,
+        destination: "local",
+        result: "本地识别错误标记已撤回。",
+        recognitionError: false,
+      });
+    }
+    await reopened.close();
+    const restored = createClient({ username: "", password: "", fetch });
+    expect(await restored.getRecord(record.id)).toEqual(detail);
+    expect(await restored.getStats()).toEqual(stats);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { data: null }, { data: "" }, { data: {} }])(
+    "accepts empty platform feedback acknowledgements: %j",
+    async (payload) => {
+      const { createClient } = await fixture();
+      const fetch = vi.fn<FetchLike>(async () => jsonResponse(successBody()));
+      const client = createClient({ fetch });
+      await client.recognize({ image: "AQID" });
+      const record = (await client.getRecords()).items[0];
+      if (!record) throw new Error("Missing record");
+      fetch.mockResolvedValueOnce(jsonResponse({ success: true, ...payload }));
+      expect(await client.reportErrorOrThrow({ recordId: record.id })).toEqual({
+        recordId: record.id,
+        destination: "platform",
+        result: "平台报错成功。",
+        recognitionError: true,
+      });
+    },
+  );
+
+  it.each([
+    { data: "报错成功", result: "报错成功" },
+    { data: false, result: "平台报错成功。" },
+    { data: true, result: "平台报错成功。" },
+    { data: 0, result: "平台报错成功。" },
+    { data: 1, result: "平台报错成功。" },
+    { data: [], result: "平台报错成功。" },
+    { data: ["reported"], result: "平台报错成功。" },
+    { data: { result: 1 }, result: "平台报错成功。" },
+    { data: { result: null }, result: "平台报错成功。" },
+    { data: { result: "报错成功" }, result: "报错成功" },
+  ])(
+    "accepts a successful feedback acknowledgement independently of data shape: %j",
+    async ({ data, result }) => {
+      const { createClient } = await fixture();
+      const fetch = vi.fn<FetchLike>(async () => jsonResponse(successBody()));
+      const client = createClient({ fetch });
+      await client.recognize({ image: "AQID" });
+      const record = (await client.getRecords()).items[0];
+      if (!record) throw new Error("Missing record");
+      fetch.mockResolvedValueOnce(jsonResponse({ success: true, data }));
+      expect(await client.reportError({ recordId: record.id })).toMatchObject({
+        success: true,
+        data: { recordId: record.id, destination: "platform", result },
+      });
+    },
+  );
+
+  it.each(
+    [
+      { success: "true", data: "reported" },
+      { success: 1, data: true },
+      { data: "reported" },
+      null,
+      "reported",
+      [],
+    ].map((payload) => ({ payload })),
+  )("still rejects invalid feedback success envelopes: %j", async ({ payload }) => {
+    const { createClient } = await fixture();
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse(successBody()));
+    const client = createClient({ fetch });
+    await client.recognize({ image: "AQID" });
+    const record = (await client.getRecords()).items[0];
+    if (!record) throw new Error("Missing record");
+    fetch.mockResolvedValueOnce(jsonResponse(payload));
+    expect(await client.reportError({ recordId: record.id })).toMatchObject({
+      success: false,
+      code: "INVALID_RESPONSE",
+    });
+  });
+
+  it("keeps recognition and account data validation strict", async () => {
+    const { createClient } = await fixture();
+    const client = createClient({ fetch: async () => jsonResponse({ success: true, data: true }) });
+    expect(await client.recognize({ image: "AQID" })).toMatchObject({
+      success: false,
+      code: "INVALID_RESPONSE",
+    });
+    expect(await client.queryAccountInfo()).toMatchObject({
+      success: false,
+      code: "INVALID_RESPONSE",
+    });
   });
 
   it("routes persisted platform records, including ID collisions, using only the stored platform number", async () => {
@@ -1075,21 +1316,10 @@ describe("unified recognition error feedback", () => {
       data: { destination: "local" },
     });
     expect(fetch).not.toHaveBeenCalled();
-    expect(await client.reportErrorOrThrow({ recordId: platform.id })).toEqual({
-      recordId: platform.id,
-      destination: "platform",
-      result: "reported",
-    });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.ttshitu.com/reporterror.json");
-    expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("manual");
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ id: "platform-id" });
-    expect((await client.getRecord(platform.id))?.recognitionError).toBe(false);
-    fetch.mockResolvedValueOnce(jsonResponse({ success: true, data: {} }));
-    expect(await client.reportErrorOrThrow({ recordId: platform.id })).toMatchObject({
-      destination: "platform",
-      result: "平台报错成功。",
-    });
+    expect(
+      await client.reportError({ recordId: platform.id, recognitionError: false }),
+    ).toMatchObject({ success: false, code: "PLATFORM_REVOKE_UNSUPPORTED" });
+    expect(fetch).not.toHaveBeenCalled();
     fetch.mockResolvedValueOnce(
       jsonResponse({ success: false, code: "REJECTED", message: "rejected", data: "" }),
     );
@@ -1102,6 +1332,25 @@ describe("unified recognition error feedback", () => {
     expect(await client.reportError({ recordId: platform.id })).toMatchObject({
       code: "REDIRECT_BLOCKED",
     });
+    fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: true, data: null }), { status: 503 }),
+    );
+    expect(await client.reportError({ recordId: platform.id })).toMatchObject({
+      success: false,
+      code: "HTTP_503",
+    });
+    expect((await client.getRecord(platform.id))?.recognitionError).toBe(false);
+    expect(await client.reportErrorOrThrow({ recordId: platform.id })).toEqual({
+      recordId: platform.id,
+      destination: "platform",
+      result: "reported",
+      recognitionError: true,
+    });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.ttshitu.com/reporterror.json");
+    expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("manual");
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ id: "platform-id" });
+    expect((await client.getRecord(platform.id))?.recognitionError).toBe(true);
   });
 
   it("fails closed for unknown, cross-account, cross-endpoint, expired, aborted and disabled-history requests", async () => {
@@ -1122,6 +1371,10 @@ describe("unified recognition error feedback", () => {
     expect(await client.reportError({ recordId: " " })).toMatchObject({
       code: "INVALID_REPORT_REQUEST",
     });
+    expect(
+      // @ts-expect-error JavaScript 调用方必须传布尔值，不能将字符串 false 当作撤回。
+      await client.reportError({ recordId: record.id, recognitionError: "false" }),
+    ).toMatchObject({ code: "INVALID_REPORT_REQUEST" });
     expect(
       await createClient({ fetch, username: "other" }).reportError({ recordId: record.id }),
     ).toMatchObject({ code: "RECORD_NOT_FOUND" });
@@ -1163,23 +1416,29 @@ describe("unified recognition error feedback", () => {
       await client.reportError({ recordId: record.id }, { signal: AbortSignal.abort() }),
     ).toMatchObject({ code: "ABORTED" });
     expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
+    await client.reportErrorOrThrow({ recordId: record.id });
     const database = new DatabaseSync(join(directory, "history.sqlite"));
     try {
       database.exec(
         "CREATE TRIGGER reject_feedback BEFORE UPDATE OF recognition_error ON recognition_records BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
       );
-      expect(await client.reportError({ recordId: record.id })).toMatchObject({
-        code: "HISTORY_ERROR",
-      });
-      expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
+      for (const recognitionError of [true, false]) {
+        expect(await client.reportError({ recordId: record.id, recognitionError })).toMatchObject({
+          code: "HISTORY_ERROR",
+        });
+        expect((await client.getRecord(record.id))?.recognitionError).toBe(true);
+      }
       database.exec("DROP TRIGGER reject_feedback");
     } finally {
       database.close();
     }
-    expect(await client.reportError({ recordId: record.id })).toMatchObject({
+    expect(
+      await client.reportError({ recordId: record.id, recognitionError: false }),
+    ).toMatchObject({
       success: true,
       data: { recordId: record.id, destination: "local" },
     });
+    expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
 

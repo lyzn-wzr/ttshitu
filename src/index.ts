@@ -155,8 +155,8 @@ export class ZkCaptchaClient {
   }
 
   /**
-   * 按本地明细来源反馈错误：自定义算法只标记本地，平台记录才发送线上报错。
-   * @param request 当前账号与接口下的本地记录 UUID。
+   * 按本地明细来源反馈错误或撤回本地标记，平台记录仅支持线上报错。
+   * @param request 当前账号与接口下的本地记录 UUID；recognitionError 默认为 true。
    * @param options 单次平台请求控制；已取消的反馈不执行本地更新。
    * @returns 统一反馈响应；记录关闭、不存在或存储失败均返回失败，不发送平台请求。
    */
@@ -168,6 +168,9 @@ export class ZkCaptchaClient {
       if (typeof request?.recordId !== "string" || !request.recordId.trim()) {
         return failure("INVALID_REPORT_REQUEST", "错误反馈需要本地记录 UUID（recordId）。", "");
       }
+      if (request.recognitionError !== undefined && typeof request.recognitionError !== "boolean") {
+        return failure("INVALID_REPORT_REQUEST", "recognitionError 必须为布尔值。", "");
+      }
       if (options?.signal?.aborted) return failure("ABORTED", "错误反馈已取消。", "");
       if (this.history === undefined)
         return failure("HISTORY_DISABLED", "错误反馈需要开启本地记录。", "");
@@ -177,40 +180,69 @@ export class ZkCaptchaClient {
         if (record === null)
           return failure("RECORD_NOT_FOUND", "记录不存在、已过期或不属于当前账号及接口。", "");
         if (record.algorithm !== null) {
-          if (!this.history.markRecognitionError(record.id))
+          const recognitionError = request.recognitionError ?? true;
+          if (!this.history.markRecognitionError(record.id, recognitionError))
             return failure("RECORD_NOT_FOUND", "本地记录已失效。", "");
+          const result = recognitionError ? "本地识别错误已标记。" : "本地识别错误标记已撤回。";
           return {
             success: true,
             code: "0",
-            message: "本地识别错误已标记。",
-            data: { recordId: record.id, destination: "local", result: "本地识别错误已标记。" },
+            message: result,
+            data: { recordId: record.id, destination: "local", result, recognitionError },
           };
         }
       } catch (error) {
         return failure("HISTORY_ERROR", errorMessage(error), "");
       }
+      if (request.recognitionError === false)
+        return failure("PLATFORM_REVOKE_UNSUPPORTED", "平台错误反馈不支持撤回。", "");
       if (!record.success || !record.captchaId)
         return failure("INVALID_CAPTCHA_ID", "该记录没有可上报的平台识别编号。", "");
+      if (record.recognitionError) {
+        return {
+          success: true,
+          code: "0",
+          message: "该记录已向平台反馈。",
+          data: {
+            recordId: record.id,
+            destination: "platform",
+            result: "该记录已向平台反馈。",
+            recognitionError: true,
+          },
+        };
+      }
       const response = await this.requestJson(
         "/reporterror.json",
         { body: { id: record.captchaId }, method: "POST", options },
-        isReportErrorData,
+        acceptReportErrorData,
       );
-      return response.success
-        ? {
-            ...response,
-            data: {
-              recordId: record.id,
-              destination: "platform",
-              result: response.data.result ?? "平台报错成功。",
-            },
-          }
-        : response;
+      if (!response.success) return response;
+      /** 回执载荷仅提供可选说明，不能将平台已接受的反馈重新判为失败。 */
+      let result = "平台报错成功。";
+      if (typeof response.data === "string" && response.data.trim()) {
+        result = response.data;
+      } else if (isObject(response.data) && typeof response.data.result === "string") {
+        result = response.data.result;
+      }
+      /** 平台已接受反馈后，本地存储故障不能诱导调用方再次向平台上报。 */
+      let recognitionError = false;
+      try {
+        recognitionError = this.history.markRecognitionError(record.id, true);
+        if (!recognitionError)
+          this.history.notifyError(new Error("平台反馈成功，但本地标记未保存。"));
+      } catch (error) {
+        this.history.notifyError(error);
+      }
+      if (!recognitionError) result += "（本地标记保存失败，请勿重复上报）";
+      return {
+        ...response,
+        data: { recordId: record.id, destination: "platform", result, recognitionError },
+      };
     });
   }
 
   /**
-   * 上报错误识别结果，并只返回成功响应中的 `data`。
+   * 反馈识别错误或撤回本地标记，并只返回成功响应中的 `data`。
    *
    * 当请求失败时抛出 {@link ZkCaptchaApiError}。
    * @param request 本地记录 UUID，分流规则与 reportError 相同。
@@ -793,12 +825,11 @@ const isRecognizeData = (value: unknown): value is RecognizeData =>
   isObject(value) && typeof value.result === "string" && typeof value.id === "string";
 
 /**
- * 允许报错响应省略结果文本。
- * @param value 未知成功载荷。
- * @returns 是否符合报错数据类型。
+ * 报错回执没有必需数据字段，是否成功由请求层的 HTTP 状态及布尔 success 决定。
+ * @param _value 可选说明载荷，不作为反馈成功的判据。
+ * @returns 接受任意 data，仅用于报错接口，不放宽识别和余额的数据校验。
  */
-const isReportErrorData = (value: unknown): value is Partial<Pick<ReportErrorData, "result">> =>
-  isObject(value) && (value.result === undefined || typeof value.result === "string");
+const acceptReportErrorData = (_value: unknown): _value is unknown => true;
 
 /**
  * 校验平台余额和次数原始字符串，不进行金额浮点转换。

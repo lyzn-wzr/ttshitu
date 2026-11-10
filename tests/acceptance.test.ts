@@ -208,6 +208,28 @@ describe("local manual acceptance environment", () => {
     expect(
       await (await post("/api/record", { id: record.id }, templateConfig)).json(),
     ).toMatchObject({ data: { recognitionError: true, success: true, result: "-7" } });
+    expect(
+      (
+        await post(
+          "/api/report",
+          { recordId: record.id, recognitionError: "false" },
+          templateConfig,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      await (
+        await post("/api/report", { recordId: record.id, recognitionError: false }, templateConfig)
+      ).json(),
+    ).toMatchObject({
+      data: {
+        success: true,
+        data: { destination: "local", recordId: record.id, result: "本地识别错误标记已撤回。" },
+      },
+    });
+    expect(
+      await (await post("/api/record", { id: record.id }, templateConfig)).json(),
+    ).toMatchObject({ data: { recognitionError: false, success: true, result: "-7" } });
     expect(await (await post("/api/report", { recordId: record.id })).json()).toMatchObject({
       data: { success: false, code: "RECORD_NOT_FOUND" },
     });
@@ -258,6 +280,22 @@ describe("local manual acceptance environment", () => {
     const isolated = await post("/api/history", {}, { endpoint: "zhunkuai" });
     expect(await isolated.json()).toMatchObject({ data: { page: { total: 0 } } });
     expect((await post("/api/report", { recordId: id })).status).toBe(200);
+    expect(await (await post("/api/record", { id })).json()).toMatchObject({
+      data: { recognitionError: true, success: true, price: "0.002000" },
+    });
+    for (const recognitionError of [true, false]) {
+      expect(
+        await (await post("/api/history", { filter: { recognitionError } })).json(),
+      ).toMatchObject({
+        data: {
+          page: { total: recognitionError ? 1 : 0 },
+          stats: { summary: { total: recognitionError ? 1 : 0 } },
+        },
+      });
+    }
+    expect((await post("/api/history", { filter: { recognitionError: "false" } })).status).toBe(
+      400,
+    );
     const account = await post("/api/account");
     expect(await account.json()).toMatchObject({
       data: { success: true, data: { balance: "100.000000" } },

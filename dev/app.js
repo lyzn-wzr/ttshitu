@@ -180,6 +180,9 @@ const output = (label, data) => {
 const filters = () => ({
   ...(field("filter-type").value ? { typeid: field("filter-type").value } : {}),
   ...(field("filter-success").value ? { success: field("filter-success").value === "true" } : {}),
+  ...(field("filter-mark").value
+    ? { recognitionError: field("filter-mark").value === "true" }
+    : {}),
   ...(field("from").value ? { from: new Date(field("from").value).toISOString() } : {}),
   ...(field("to").value ? { to: new Date(field("to").value).toISOString() } : {}),
   limit: PAGE_SIZE,
@@ -282,19 +285,28 @@ const refresh = async () => {
         void run("加载识别明细", () => showDetail(String(item.id)));
       });
       action.append(button);
-      if (!item.recognitionError && (item.algorithm !== null || item.success)) {
-        const mark = node("button", "反馈识别错误", "text-button");
+      if (item.algorithm !== null || (item.success && !item.recognitionError)) {
+        const recognitionError = !item.recognitionError;
+        const label = recognitionError ? "反馈识别错误" : "撤回错误反馈";
+        const mark = node("button", label, "text-button");
         mark.type = "button";
         mark.addEventListener("click", () => {
-          void run("反馈识别错误", async () => {
-            const data = await api("/api/report", { recordId: item.id });
+          void run(label, async () => {
+            const data = await api("/api/report", { recordId: item.id, recognitionError });
             output("reportError", data);
             await refresh();
           });
         });
         action.append(mark);
       }
-      if (item.recognitionError) state.append(node("span", "识别错误（本地）", "badge failure"));
+      if (item.recognitionError)
+        state.append(
+          node(
+            "span",
+            item.algorithm === null ? "已反馈（平台）" : "识别错误（本地）",
+            "badge failure",
+          ),
+        );
       const result = node("td", item.result ?? item.code);
       result.title = String(item.message ?? "");
       row.append(
@@ -512,7 +524,8 @@ element("filters").addEventListener("submit", (event) => {
   void run("查询本地记录", refresh);
 });
 element("reset-filters").addEventListener("click", () => {
-  for (const id of ["filter-type", "filter-success", "from", "to"]) field(id).value = "";
+  for (const id of ["filter-type", "filter-success", "filter-mark", "from", "to"])
+    field(id).value = "";
   offset = 0;
   void run("重置筛选并刷新", refresh);
 });
