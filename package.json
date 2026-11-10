@@ -1,6 +1,6 @@
 {
   "name": "@lyzn/zk-captcha",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "用于准快/快识别/图鉴的识别验证码SDK。",
   "keywords": [
     "bun",
