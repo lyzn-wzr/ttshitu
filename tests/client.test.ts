@@ -237,40 +237,14 @@ describe("ZkCaptchaClient request methods", () => {
     });
   });
 
-  it("posts report error requests", async () => {
-    const fetchImpl = mockFetch(async (_url, _init) =>
-      jsonResponse({
-        code: "0",
-        data: {
-          result: "reported",
-        },
-        message: "success",
-        success: true,
-      }),
-    );
-    const client = createClient(fetchImpl);
-
-    fetchImpl.mockResolvedValueOnce(
-      jsonResponse({
-        success: true,
-        code: "0",
-        message: "success",
-        data: { id: "captcha-id", result: "abcd" },
-      }),
-    );
-    await client.recognize({ image: "AQID" });
-    fetchImpl.mockClear();
-
-    const response = await client.reportError({
-      id: "captcha-id",
+  it("requires local history for feedback and never sends unknown IDs", async () => {
+    const fetch = mockFetch(async () => jsonResponse({}));
+    const client = createClient(fetch);
+    expect(await client.reportError({ recordId: "missing" })).toMatchObject({
+      success: false,
+      code: "HISTORY_DISABLED",
     });
-
-    expect(response.success).toBe(true);
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://api.ttshitu.com/reporterror.json");
-    expect(fetchImpl.mock.calls[0]?.[1]?.redirect).toBe("manual");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
-      id: "captcha-id",
-    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("returns failed API responses without throwing", async () => {
@@ -402,23 +376,12 @@ describe("ZkCaptchaClient request protection", () => {
     });
   });
 
-  it.each(["recognize", "reportError", "queryAccountInfo"])(
+  it.each(["recognize", "queryAccountInfo"])(
     "does not forward credentials via real fetch redirects for %s",
     async (method) => {
       const paths: string[] = [];
       const server = createServer((request, response) => {
         paths.push(new URL(request.url ?? "/", "http://localhost").pathname);
-        if (method === "reportError" && request.url === "/predict") {
-          response.end(
-            JSON.stringify({
-              success: true,
-              code: "0",
-              message: "success",
-              data: { id: "id", result: "abcd" },
-            }),
-          );
-          return;
-        }
         response.writeHead(307, { location: "/forwarded" });
         response.end("redirect");
       });
@@ -430,16 +393,10 @@ describe("ZkCaptchaClient request protection", () => {
         baseUrl: `http://127.0.0.1:${address.port}`,
       });
       try {
-        if (method === "reportError") {
-          await client.recognize({ image: "AQID" });
-          paths.length = 0;
-        }
         const result =
           method === "recognize"
             ? await client.recognize({ image: "AQID" })
-            : method === "reportError"
-              ? await client.reportError({ id: "id" })
-              : await client.queryAccountInfo();
+            : await client.queryAccountInfo();
         expect(result).toMatchObject({ success: false, code: "REDIRECT_BLOCKED" });
         expect(paths).toHaveLength(1);
         expect(paths).not.toContain("/forwarded");

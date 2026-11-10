@@ -390,29 +390,25 @@ export interface RecognizeData {
   result: string;
 
   /**
-   * 平台或算法提供的识别编号；只有平台编号可用于 `reportError`。
+   * 平台或算法提供的识别编号；错误反馈须使用本地明细 UUID。
    */
   id: string;
 }
 
-/**
- * 报错接口 `/reporterror.json` 的请求参数。
- */
+/** 按本地明细来源自动分流的错误反馈参数。 */
 export interface ReportErrorRequest {
-  /**
-   * 成功识别响应返回的 `id`。
-   */
-  id: string;
+  /** 本地明细 UUID，不接受平台或算法返回的识别编号。 */
+  recordId: string;
 }
 
-/**
- * `/reporterror.json` 成功响应中的 `data` 数据。
- */
+/** 本地标记与线上报错共用的成功数据。 */
 export interface ReportErrorData {
-  /**
-   * 服务端返回的报错结果文本，通常是“报错成功”或兼容域名返回的等价文案。
-   */
-  result?: string;
+  /** 已处理的本地明细 UUID。 */
+  recordId: string;
+  /** 实际反馈去向：local 只更新本地，platform 已上报客户端配置的平台。 */
+  destination: "local" | "platform";
+  /** 本地处理说明或平台返回的报错结果；平台省略时提供默认说明。 */
+  result: string;
 }
 
 /**

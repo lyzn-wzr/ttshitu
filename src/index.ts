@@ -58,10 +58,6 @@ export class ZkCaptchaClient {
   private readonly fetchImpl: FetchLike;
   private readonly history: HistoryStore | undefined;
   private readonly algorithms: ReadonlyMap<string, PreparedAlgorithm>;
-  /** 即使历史写入失败或被关闭，也保留本客户端的自定义编号拦截证据。 */
-  private readonly customCaptchaIds = new Set<string>();
-  /** 关闭历史记录时，用于确认平台报错编号的来源。 */
-  private readonly platformCaptchaIds = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -137,11 +133,6 @@ export class ZkCaptchaClient {
               isRecognizeData,
             )
           : await this.recognizeAlgorithm(algorithmId ?? "", algorithmRequest, options);
-      if (response.success) {
-        (algorithmId === undefined ? this.platformCaptchaIds : this.customCaptchaIds).add(
-          response.data.id,
-        );
-      }
       const durationMs = performance.now() - started;
       this.history?.record(body, response, startedAt, durationMs, algorithmId ?? null);
       return response;
@@ -164,38 +155,57 @@ export class ZkCaptchaClient {
   }
 
   /**
-   * 调用 `/reporterror.json` 上报错误识别结果。
-   *
-   * 官方服务会在约 5 分钟后批量处理报错返还，因此报错成功后余额不一定立刻变化。
-   * 只接受当前客户端或本地记录能确认的平台编号，拒绝来源不明及自定义编号。
-   * @param request 平台识别编号。
-   * @param options 单次请求控制。
-   * @returns 报错响应，不新增识别记录或重算历史费用。
+   * 按本地明细来源反馈错误：自定义算法只标记本地，平台记录才发送线上报错。
+   * @param request 当前账号与接口下的本地记录 UUID。
+   * @param options 单次平台请求控制；已取消的反馈不执行本地更新。
+   * @returns 统一反馈响应；记录关闭、不存在或存储失败均返回失败，不发送平台请求。
    */
   async reportError(
     request: ReportErrorRequest,
     options?: ZkCaptchaRequestOptions,
   ): Promise<ZkCaptchaResponse<ReportErrorData>> {
-    return this.track(() => {
-      if (!this.username || !this.password) {
-        return failure("MISSING_CREDENTIALS", "调用平台接口需要配置 username 和 password。", "");
+    return this.track(async () => {
+      if (typeof request?.recordId !== "string" || !request.recordId.trim()) {
+        return failure("INVALID_REPORT_REQUEST", "错误反馈需要本地记录 UUID（recordId）。", "");
       }
-      const sources = this.history?.getCaptchaSources(request.id);
-      if (this.customCaptchaIds.has(request.id) || sources?.custom) {
-        return failure(
-          "CUSTOM_ALGORITHM_ID",
-          "自定义算法编号不能上报平台，请使用 markRecognitionError 标记本地记录。",
-          "",
-        );
+      if (options?.signal?.aborted) return failure("ABORTED", "错误反馈已取消。", "");
+      if (this.history === undefined)
+        return failure("HISTORY_DISABLED", "错误反馈需要开启本地记录。", "");
+      let record: RecognitionDetail | null;
+      try {
+        record = this.history.getRecord(request.recordId);
+        if (record === null)
+          return failure("RECORD_NOT_FOUND", "记录不存在、已过期或不属于当前账号及接口。", "");
+        if (record.algorithm !== null) {
+          if (!this.history.markRecognitionError(record.id))
+            return failure("RECORD_NOT_FOUND", "本地记录已失效。", "");
+          return {
+            success: true,
+            code: "0",
+            message: "本地识别错误已标记。",
+            data: { recordId: record.id, destination: "local", result: "本地识别错误已标记。" },
+          };
+        }
+      } catch (error) {
+        return failure("HISTORY_ERROR", errorMessage(error), "");
       }
-      if (!this.platformCaptchaIds.has(request.id) && !sources?.platform) {
-        return failure("UNVERIFIED_CAPTCHA_ID", "无法确认编号来自平台，已阻止线上报错。", "");
-      }
-      return this.requestJson(
+      if (!record.success || !record.captchaId)
+        return failure("INVALID_CAPTCHA_ID", "该记录没有可上报的平台识别编号。", "");
+      const response = await this.requestJson(
         "/reporterror.json",
-        { body: { id: request.id }, method: "POST", options },
+        { body: { id: record.captchaId }, method: "POST", options },
         isReportErrorData,
       );
+      return response.success
+        ? {
+            ...response,
+            data: {
+              recordId: record.id,
+              destination: "platform",
+              result: response.data.result ?? "平台报错成功。",
+            },
+          }
+        : response;
     });
   }
 
@@ -203,7 +213,7 @@ export class ZkCaptchaClient {
    * 上报错误识别结果，并只返回成功响应中的 `data`。
    *
    * 当请求失败时抛出 {@link ZkCaptchaApiError}。
-   * @param request 平台识别编号。
+   * @param request 本地记录 UUID，分流规则与 reportError 相同。
    * @param options 单次请求控制。
    * @returns 成功的报错数据。
    */
@@ -266,15 +276,6 @@ export class ZkCaptchaClient {
    */
   async getRecord(id: string): Promise<RecognitionDetail | null> {
     return this.track(() => this.getHistory().getRecord(id));
-  }
-
-  /**
-   * 在本地标记自定义算法识别错误，不发送网络请求。
-   * @param id 本地记录 UUID，不是算法返回的编号。
-   * @returns 更新成功为 true，不存在、跨账号或平台记录为 false；未开启记录或写入失败时抛错。
-   */
-  async markRecognitionError(id: string): Promise<boolean> {
-    return this.track(() => this.getHistory().markRecognitionError(id));
   }
 
   /**
@@ -797,7 +798,7 @@ const isRecognizeData = (value: unknown): value is RecognizeData =>
  * @param value 未知成功载荷。
  * @returns 是否符合报错数据类型。
  */
-const isReportErrorData = (value: unknown): value is ReportErrorData =>
+const isReportErrorData = (value: unknown): value is Partial<Pick<ReportErrorData, "result">> =>
   isObject(value) && (value.result === undefined || typeof value.result === "string");
 
 /**

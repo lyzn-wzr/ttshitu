@@ -230,7 +230,7 @@ describe("local recognition history", () => {
     await client.recognizeOrThrow({ image: "AQID" });
     await recognizeFromFile(client, imagePath);
     await recognizeFromFileOrThrow(client, imagePath);
-    await client.reportError({ id: "platform-id" });
+    await client.reportError({ recordId: (await client.getRecords()).items[0]?.id ?? "missing" });
     await client.queryAccountInfo();
     const page = await client.getRecords();
     expect(page.total).toBe(4);
@@ -946,16 +946,18 @@ describe("local recognition history", () => {
     await expect(client.getRecords()).rejects.toThrow("已关闭");
     await expect(client.getStats()).rejects.toThrow("已关闭");
     await expect(client.getRecord("id")).rejects.toThrow("已关闭");
-    await expect(client.reportError({ id: "id" })).rejects.toThrow("已关闭");
+    await expect(client.reportError({ recordId: "id" })).rejects.toThrow("已关闭");
     await expect(client.queryAccountInfo()).rejects.toThrow("已关闭");
   });
 });
 
-describe("local recognition error marks and platform report protection", () => {
-  it("persists an idempotent custom mark without changing responses, images, fees or statistics", async () => {
+describe("unified recognition error feedback", () => {
+  it("persists idempotent local feedback without credentials, network, or changes to original data and stats", async () => {
     const { createClient } = await fixture();
     const fetch = vi.fn<FetchLike>();
     const client = createClient({
+      username: "",
+      password: "",
       fetch,
       algorithms: {
         local: { kind: "local", typeids: [3], recognize: () => successBody() },
@@ -967,57 +969,165 @@ describe("local recognition error marks and platform report protection", () => {
     const detail = await client.getRecord(record.id);
     const stats = await client.getStats();
     expect(record.recognitionError).toBe(false);
-    expect(await client.markRecognitionError(record.id)).toBe(true);
-    expect(await client.markRecognitionError(record.id)).toBe(true);
-    expect(await client.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
-    expect(await client.getStats()).toEqual(stats);
-    await client.close();
-    const reopened = createClient({ fetch });
-    expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
-    for (const id of [record.captchaId ?? "", record.id]) {
-      expect(await reopened.reportError({ id })).toMatchObject({
-        success: false,
-        code: "CUSTOM_ALGORITHM_ID",
+    for (let count = 0; count < 2; count++) {
+      expect(await client.reportError({ recordId: record.id })).toEqual({
+        success: true,
+        code: "0",
+        message: "本地识别错误已标记。",
+        data: { recordId: record.id, destination: "local", result: "本地识别错误已标记。" },
       });
     }
+    expect(await client.reportErrorOrThrow({ recordId: record.id })).toMatchObject({
+      destination: "local",
+      recordId: record.id,
+    });
+    expect(await client.getStats()).toEqual(stats);
+    await client.close();
+    const reopened = createClient({ username: "", password: "", fetch });
+    expect(await reopened.getRecord(record.id)).toEqual({ ...detail, recognitionError: true });
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects platform, unknown and other-account records for local marking", async () => {
+  it("routes persisted platform records, including ID collisions, using only the stored platform number", async () => {
     const { createClient } = await fixture();
-    const client = createClient();
-    await client.recognize({ image: "AQID" });
-    const record = (await client.getRecords()).items[0];
-    if (!record) throw new Error("Missing record");
-    expect(await client.markRecognitionError(record.id)).toBe(false);
-    expect(await client.markRecognitionError("missing")).toBe(false);
-    const other = createClient({ username: "other" });
-    expect(await other.markRecognitionError(record.id)).toBe(false);
-    expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
-    await expect(createClient({ history: false }).markRecognitionError(record.id)).rejects.toThrow(
-      "记录功能未开启",
-    );
-    await client.close();
-    await expect(client.markRecognitionError(record.id)).rejects.toThrow("已关闭");
-  });
-
-  it("verifies persisted platform IDs and blocks unknown IDs without sending requests", async () => {
-    const { createClient } = await fixture();
-    const seed = createClient();
+    const seed = createClient({
+      algorithms: { local: { kind: "local", typeids: [3], recognize: () => successBody() } },
+    });
     await seed.recognize({ image: "AQID" });
+    const platform = (await seed.getRecords()).items[0];
+    await seed.recognize({ algorithm: "local", image: "AQID" });
+    const custom = (await seed.getRecords({ algorithm: "local" })).items[0];
+    if (!platform || !custom) throw new Error("Missing records");
     await seed.close();
     const fetch = vi.fn<FetchLike>(async () =>
       jsonResponse({ success: true, code: "0", message: "success", data: { result: "reported" } }),
     );
-    const reopened = createClient({ fetch });
-    expect(await reopened.reportError({ id: "missing" })).toMatchObject({
-      code: "UNVERIFIED_CAPTCHA_ID",
-    });
-    await expect(reopened.reportErrorOrThrow({ id: "missing" })).rejects.toMatchObject({
-      code: "UNVERIFIED_CAPTCHA_ID",
+    const client = createClient({ fetch });
+    expect(await client.reportError({ recordId: custom.id })).toMatchObject({
+      success: true,
+      data: { destination: "local" },
     });
     expect(fetch).not.toHaveBeenCalled();
-    expect((await reopened.reportError({ id: "platform-id" })).success).toBe(true);
+    expect(await client.reportErrorOrThrow({ recordId: platform.id })).toEqual({
+      recordId: platform.id,
+      destination: "platform",
+      result: "reported",
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.ttshitu.com/reporterror.json");
+    expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("manual");
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ id: "platform-id" });
+    expect((await client.getRecord(platform.id))?.recognitionError).toBe(false);
+    fetch.mockResolvedValueOnce(jsonResponse({ success: true, data: {} }));
+    expect(await client.reportErrorOrThrow({ recordId: platform.id })).toMatchObject({
+      destination: "platform",
+      result: "平台报错成功。",
+    });
+    fetch.mockResolvedValueOnce(
+      jsonResponse({ success: false, code: "REJECTED", message: "rejected", data: "" }),
+    );
+    await expect(client.reportErrorOrThrow({ recordId: platform.id })).rejects.toMatchObject({
+      code: "REJECTED",
+    });
+    fetch.mockResolvedValueOnce(
+      new Response("redirect", { status: 307, headers: { location: "https://example.com" } }),
+    );
+    expect(await client.reportError({ recordId: platform.id })).toMatchObject({
+      code: "REDIRECT_BLOCKED",
+    });
+  });
+
+  it("fails closed for unknown, cross-account, cross-endpoint, expired, aborted and disabled-history requests", async () => {
+    const { directory, createClient } = await fixture();
+    const seed = createClient();
+    await seed.recognize({ image: "AQID" });
+    const record = (await seed.getRecords()).items[0];
+    if (!record) throw new Error("Missing record");
+    const fetch = vi.fn<FetchLike>();
+    const client = createClient({ fetch });
+    for (const recordId of ["missing", "platform-id"]) {
+      expect(await client.reportError({ recordId })).toMatchObject({ code: "RECORD_NOT_FOUND" });
+    }
+    // @ts-expect-error 模拟仍传旧版平台编号的 JavaScript 调用方。
+    expect(await client.reportError({ id: "platform-id" })).toMatchObject({
+      code: "INVALID_REPORT_REQUEST",
+    });
+    expect(await client.reportError({ recordId: " " })).toMatchObject({
+      code: "INVALID_REPORT_REQUEST",
+    });
+    expect(
+      await createClient({ fetch, username: "other" }).reportError({ recordId: record.id }),
+    ).toMatchObject({ code: "RECORD_NOT_FOUND" });
+    expect(
+      await createClient({ fetch, endpoint: "zhunkuai" }).reportError({ recordId: record.id }),
+    ).toMatchObject({ code: "RECORD_NOT_FOUND" });
+    expect(
+      await createClient({ fetch, history: false }).reportError({ recordId: record.id }),
+    ).toMatchObject({ code: "HISTORY_DISABLED" });
+    expect(
+      await client.reportError({ recordId: record.id }, { signal: AbortSignal.abort() }),
+    ).toMatchObject({ code: "ABORTED" });
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 2 * 86400000);
+    expect(
+      await createClient({ fetch, history: { directory, retentionDays: 1 } }).reportError({
+        recordId: record.id,
+      }),
+    ).toMatchObject({ code: "RECORD_NOT_FOUND" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps HTTP algorithm feedback local and returns write failures without touching upstream", async () => {
+    const { directory, createClient } = await fixture();
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse(successBody()));
+    const client = createClient({
+      fetch,
+      username: "",
+      password: "",
+      algorithms: {
+        remote: { kind: "http", typeids: [3], url: "https://algorithm.invalid/recognize" },
+      },
+    });
+    await client.recognize({ algorithm: "remote", image: "AQID" });
+    const record = (await client.getRecords()).items[0];
+    if (!record) throw new Error("Missing remote record");
+    fetch.mockClear();
+    expect(
+      await client.reportError({ recordId: record.id }, { signal: AbortSignal.abort() }),
+    ).toMatchObject({ code: "ABORTED" });
+    expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
+    const database = new DatabaseSync(join(directory, "history.sqlite"));
+    try {
+      database.exec(
+        "CREATE TRIGGER reject_feedback BEFORE UPDATE OF recognition_error ON recognition_records BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+      );
+      expect(await client.reportError({ recordId: record.id })).toMatchObject({
+        code: "HISTORY_ERROR",
+      });
+      expect((await client.getRecord(record.id))?.recognitionError).toBe(false);
+      database.exec("DROP TRIGGER reject_feedback");
+    } finally {
+      database.close();
+    }
+    expect(await client.reportError({ recordId: record.id })).toMatchObject({
+      success: true,
+      data: { recordId: record.id, destination: "local" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns storage failures and never sends a request when local provenance cannot be read", async () => {
+    const { directory, createClient } = await fixture();
+    await writeFile(join(directory, "history.sqlite"), "invalid database");
+    const fetch = vi.fn<FetchLike>();
+    const client = createClient({ fetch });
+    expect(await client.reportError({ recordId: "id" })).toMatchObject({
+      success: false,
+      code: "HISTORY_ERROR",
+    });
+    await expect(client.reportErrorOrThrow({ recordId: "id" })).rejects.toMatchObject({
+      code: "HISTORY_ERROR",
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

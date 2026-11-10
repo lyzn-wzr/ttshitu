@@ -232,7 +232,6 @@ describe("custom algorithms", () => {
     const client = createClient({ fetch });
     for (const response of [
       await client.recognize({ image: "AQID" }),
-      await client.reportError({ id: "id" }),
       await client.queryAccountInfo(),
     ])
       expect(response).toMatchObject({ success: false, code: "MISSING_CREDENTIALS" });
@@ -387,29 +386,12 @@ describe("custom algorithms", () => {
   );
 });
 
-describe("report provenance without history", () => {
-  it("blocks custom and unknown IDs and rejects collisions even after platform recognition", async () => {
-    const fetch = vi.fn<FetchLike>(async () => Response.json(success()));
-    const client = createClient({
-      username: "user",
-      password: "pass",
-      fetch,
-      algorithms: {
-        local: { kind: "local", typeids: [3], recognize: () => success() },
-      },
-    });
-    expect(await client.reportError({ id: "unknown" })).toMatchObject({
-      code: "UNVERIFIED_CAPTCHA_ID",
-    });
-    await client.recognize({ algorithm: "local", image: "AQID" });
-    expect(await client.reportError({ id: "algorithm-id" })).toMatchObject({
-      code: "CUSTOM_ALGORITHM_ID",
-    });
-    expect(fetch).not.toHaveBeenCalled();
-    await client.recognize({ image: "AQID" });
-    fetch.mockClear();
-    await expect(client.reportErrorOrThrow({ id: "algorithm-id" })).rejects.toMatchObject({
-      code: "CUSTOM_ALGORITHM_ID",
+describe("feedback without history", () => {
+  it("rejects local feedback before any network request", async () => {
+    const fetch = vi.fn<FetchLike>();
+    const client = createClient({ fetch });
+    await expect(client.reportErrorOrThrow({ recordId: "unknown" })).rejects.toMatchObject({
+      code: "HISTORY_DISABLED",
     });
     expect(fetch).not.toHaveBeenCalled();
   });
